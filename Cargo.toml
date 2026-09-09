@@ -1,0 +1,14 @@
+[package]
+name = "nagasaki"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+description = "Native Rust to Naga transpiler"
+license = "MIT"
+repository = "https://github.com/kvark/nagasaki"
+readme = "README.md"
+
+[dependencies]
+naga = { version = "30", features = ["wgsl-out"] }
+syn = { version = "2", features = ["full", "parsing"] }
+thiserror = "2"
