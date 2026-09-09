@@ -32,7 +32,7 @@ fn let_shadows_arg() {
 
 #[test]
 fn if_expr_tail() {
-    let wgsl = roundtrip("fn pick(c: bool, a: f32, b: f32) -> f32 { if c { a } else { b }");
+    let wgsl = roundtrip("fn pick(c: bool, a: f32, b: f32) -> f32 { if c { a } else { b } }");
     assert!(wgsl.contains("if"), "{wgsl}");
 }
 
