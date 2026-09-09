@@ -20,4 +20,12 @@ pub enum Error {
     Receiver,
     #[error("pattern parameters are not supported")]
     PatternParam,
+    #[error("`let` without initializer is not supported")]
+    MissingLetInit,
+    #[error("`if` used as a value needs an `else` branch")]
+    IfExprMissingElse,
+    #[error("block used as a value has no tail expression")]
+    MissingBlockValue,
+    #[error("type mismatch")]
+    TypeMismatch,
 }

@@ -10,10 +10,12 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - free functions
 - scalars: `f32`, `u32`, `i32`, `bool`
 - literals, unary `-/!`, arithmetic / compare / bitwise ops
+- `let` / `let x: T = …` (runtime Store + Load; no const init)
+- `if` / `else` / `else if` as statement or value
 - implicit tail expressions and `return`
 
-Not yet: `let`, `if`/`loop`, references, methods, generics, structs, entry-point
-attributes.
+Not yet: `loop`/`while`, assignment, references, methods, generics, structs,
+entry-point attributes. `!` is `LogicalNot` (bool).
 
 ## Example
 

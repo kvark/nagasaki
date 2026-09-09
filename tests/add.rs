@@ -42,10 +42,3 @@ fn unary_and_bool() {
     let module = parse_str(src).unwrap();
     validate(&module).unwrap();
 }
-
-#[test]
-fn rejects_let() {
-    let err = parse_str("fn f(a: f32) -> f32 { let x = a; x }").unwrap_err();
-    let msg = err.to_string();
-    assert!(msg.contains("let"), "{msg}");
-}
