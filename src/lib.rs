@@ -1,7 +1,7 @@
 //! Native Rust → [`naga::Module`] frontend.
 //!
 //! v0 dialect: free functions, scalar types (`f32` / `u32` / `i32` / `bool`),
-//! literals, unary/binary operators, `let`, `if`/`else`, and `return`.
+//! literals, unary/binary operators, `let`, assignment, `if`/`else`, and `return`.
 //! No references, methods, generics, or loops yet.
 
 mod error;

@@ -28,4 +28,8 @@ pub enum Error {
     MissingBlockValue,
     #[error("type mismatch")]
     TypeMismatch,
+    #[error("cannot assign to function argument `{0}`")]
+    AssignToArgument(String),
+    #[error("assignment target must be a local identifier")]
+    InvalidAssignTarget,
 }
