@@ -1,12 +1,12 @@
 use naga::{Expression, Handle, Type};
 
-pub(super) struct Binding {
+pub(crate) struct Binding {
     pub name: String,
     pub slot: Slot,
     pub ty: Handle<Type>,
 }
 
-pub(super) enum Slot {
+pub(crate) enum Slot {
     /// Already a value (`FunctionArgument`).
     Value(Handle<Expression>),
     /// Pointer to a `LocalVariable`.
@@ -14,7 +14,7 @@ pub(super) enum Slot {
 }
 
 #[derive(Default)]
-pub(super) struct Env {
+pub(crate) struct Env {
     bindings: Vec<Binding>,
     scopes: Vec<usize>,
 }
