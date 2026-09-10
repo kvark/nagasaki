@@ -6,11 +6,13 @@ use syn::{FnArg, Item, ItemFn, ReturnType, Signature};
 
 use crate::Error;
 
+mod call;
 mod emit;
 mod entry;
 mod env;
 mod expr;
 mod stmt;
+mod vector;
 
 use emit::item_kind;
 use env::{Env, Slot};
