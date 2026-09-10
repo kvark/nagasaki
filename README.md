@@ -24,10 +24,11 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - bindings: `#[location(N)]`, `#[builtin(name)]` on args; `#[output(builtin(..))]` / `#[output(location(N))]` on the fn
 - calls to earlier free functions
 - math builtins: `dot`, `cross`, `normalize`, `length`, `distance`, `abs`, `min`, `max`, `clamp`, `mix`, `sin`, `cos`, `transpose`, `determinant`, …
+- globals: `#[group(N)] #[binding(M)] static x: T = ();` (init ignored) or `extern { static x: T; }`
+- address spaces: uniform (default / `#[uniform]`), `#[storage]` (read), `#[storage(read_write)]`
 
 Not yet: labeled loops, `break` values, `for`, component stores (`v.x =`),
-forward calls, methods, generics, structs, `@group`/`@binding`
-globals. `!` is `LogicalNot` (bool). Assignment to function arguments is
+forward calls, methods, generics, structs. `!` is `LogicalNot` (bool). Assignment to function arguments is
 rejected. Vector compare yields a `vecN<bool>`. Interpolation is filled in
 (`perspective` for floats, `flat` for integers) on vertex outputs / fragment inputs.
 
