@@ -32,4 +32,8 @@ pub enum Error {
     AssignToArgument(String),
     #[error("assignment target must be a local identifier")]
     InvalidAssignTarget,
+    #[error("labeled loops are not supported")]
+    LoopLabel,
+    #[error("`break` with a value is not supported")]
+    BreakValue,
 }

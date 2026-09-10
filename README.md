@@ -13,11 +13,12 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - `let` / `let x: T = …` (runtime Store + Load; no const init)
 - `if` / `else` / `else if` as statement or value
 - `x = e` and compound `+=`/`-=`/`*=`/`/=`/… on locals
+- `loop` / `while` / `break` / `continue`
 - implicit tail expressions and `return`
 
-Not yet: `loop`/`while`, references, methods, generics, structs,
-entry-point attributes. `!` is `LogicalNot` (bool). Assignment to function
-arguments is rejected.
+Not yet: labeled loops, `break` values, `for`, references, methods, generics,
+structs, entry-point attributes. `!` is `LogicalNot` (bool). Assignment to
+function arguments is rejected.
 
 ## Example
 
