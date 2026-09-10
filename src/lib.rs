@@ -1,8 +1,10 @@
 //! Native Rust → [`naga::Module`] frontend.
 //!
-//! v0 dialect: free functions, scalar types (`f32` / `u32` / `i32` / `bool`),
-//! literals, unary/binary operators, `let`, assignment, `if`/`else`, `loop`/`while`,
-//! and `return`. No references, methods, generics, or entry points yet.
+//! v0 dialect: free functions, scalars (`f32` / `u32` / `i32` / `bool`),
+//! vectors (`vec2`/`vec3`/`vec4` and `vecN<T>`), literals, unary/binary operators,
+//! `let`, assignment, `if`/`else`, `loop`/`while`, `return`, and
+//! `#[vertex]`/`#[fragment]`/`#[compute]` entry points.
+//! No references, methods, generics, or structs yet.
 
 mod error;
 mod lower;
