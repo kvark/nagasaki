@@ -11,6 +11,7 @@ mod emit;
 mod entry;
 mod env;
 mod expr;
+mod global;
 mod matrix;
 mod stmt;
 mod vector;
@@ -21,12 +22,14 @@ use stmt::lower_block;
 
 pub struct Context {
     pub module: Module,
+    pub(super) globals: Vec<global::GlobalInfo>,
 }
 
 impl Context {
     pub fn new() -> Self {
         Self {
             module: Module::default(),
+            globals: Vec::new(),
         }
     }
 
@@ -36,6 +39,8 @@ impl Context {
                 Item::Fn(func) => {
                     self.lower_fn(func)?;
                 }
+                Item::Static(st) => global::lower_static(self, st)?,
+                Item::ForeignMod(fm) => global::lower_foreign_mod(self, fm)?,
                 other => return Err(Error::UnsupportedItem(item_kind(&other))),
             }
         }
@@ -200,6 +205,7 @@ impl Context {
         };
 
         let mut env = Env::default();
+        global::bind_globals(self, &mut function, &mut env);
         lower_signature(self, &mut function, &item.sig, &mut env)?;
         let mut body = Block::new();
         env.push_scope();
