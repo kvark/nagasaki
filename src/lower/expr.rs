@@ -85,6 +85,7 @@ pub(super) fn lower_expr(
         Expr::Call(call) => lower_call(ctx, function, body, call, env),
         Expr::Field(field) => lower_field(ctx, function, body, field, env),
         Expr::Index(index) => lower_index(ctx, function, body, index, env),
+        Expr::Struct(lit) => super::structure::lower_struct_lit(ctx, function, body, lit, env),
         _ => Err(Error::UnsupportedExpr(expr_kind(expr))),
     }
 }
