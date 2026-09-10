@@ -11,6 +11,7 @@ mod emit;
 mod entry;
 mod env;
 mod expr;
+mod matrix;
 mod stmt;
 mod vector;
 
@@ -75,6 +76,36 @@ impl Context {
         }
     }
 
+    pub(super) fn intern_matrix(
+        &mut self,
+        columns: VectorSize,
+        rows: VectorSize,
+        scalar: Scalar,
+    ) -> Handle<Type> {
+        self.module.types.insert(
+            Type {
+                name: None,
+                inner: TypeInner::Matrix {
+                    columns,
+                    rows,
+                    scalar,
+                },
+            },
+            Span::UNDEFINED,
+        )
+    }
+
+    pub(super) fn as_matrix(&self, ty: Handle<Type>) -> Option<(VectorSize, VectorSize, Scalar)> {
+        match self.module.types[ty].inner {
+            TypeInner::Matrix {
+                columns,
+                rows,
+                scalar,
+            } => Some((columns, rows, scalar)),
+            _ => None,
+        }
+    }
+
     pub(super) fn lower_type(&mut self, ty: &syn::Type) -> Result<Handle<Type>, Error> {
         let path = match ty {
             syn::Type::Path(path) if path.qself.is_none() => path,
@@ -104,6 +135,16 @@ impl Context {
                 (Some(_), Some(_)) => return Err(Error::UnsupportedType(name)),
             };
             return Ok(self.intern_vector(size, scalar));
+        }
+
+        if let Some((columns, rows, shorthand)) = parse_mat_ident(&name) {
+            let scalar = match (shorthand, type_arg) {
+                (Some(scalar), None) => scalar,
+                (None, None) => Scalar::F32,
+                (None, Some(inner)) => lower_scalar_ident(inner)?,
+                (Some(_), Some(_)) => return Err(Error::UnsupportedType(name)),
+            };
+            return Ok(self.intern_matrix(columns, rows, scalar));
         }
 
         if type_arg.is_some() {
@@ -190,6 +231,51 @@ pub(super) fn parse_vec_ident(name: &str) -> Option<(VectorSize, Option<Scalar>)
         "vec3u" | "Vec3u" => Some((VectorSize::Tri, Some(Scalar::U32))),
         "vec4u" | "Vec4u" => Some((VectorSize::Quad, Some(Scalar::U32))),
         _ => None,
+    }
+}
+
+/// Parse `mat2` / `Mat4` / `mat2x3` / `mat4f`.
+/// Scalar `None` means default `f32` (or infer from constructor args).
+pub(super) fn parse_mat_ident(name: &str) -> Option<(VectorSize, VectorSize, Option<Scalar>)> {
+    fn pair(c: char, r: char) -> Option<(VectorSize, VectorSize)> {
+        let dim = |ch| match ch {
+            '2' => Some(VectorSize::Bi),
+            '3' => Some(VectorSize::Tri),
+            '4' => Some(VectorSize::Quad),
+            _ => None,
+        };
+        Some((dim(c)?, dim(r)?))
+    }
+
+    let (stem, scalar) = match name.as_bytes().last().copied() {
+        Some(b'f' | b'F') if name.len() > 1 => (&name[..name.len() - 1], Some(Scalar::F32)),
+        _ => (name, None),
+    };
+
+    match stem {
+        "mat2" | "Mat2" => Some((VectorSize::Bi, VectorSize::Bi, scalar)),
+        "mat3" | "Mat3" => Some((VectorSize::Tri, VectorSize::Tri, scalar)),
+        "mat4" | "Mat4" => Some((VectorSize::Quad, VectorSize::Quad, scalar)),
+        other => {
+            // matCxR / MatCxR
+            let bytes = other.as_bytes();
+            let rest = if let Some(r) = other.strip_prefix("mat") {
+                r
+            } else if let Some(r) = other.strip_prefix("Mat") {
+                r
+            } else {
+                return None;
+            };
+            let b = rest.as_bytes();
+            if b.len() == 3 && b[1] == b'x' {
+                let (columns, rows) = pair(b[0] as char, b[2] as char)?;
+                // reject leftover from a bad suffix like mat2x3i until we add integer mats
+                let _ = bytes;
+                Some((columns, rows, scalar))
+            } else {
+                None
+            }
+        }
     }
 }
 

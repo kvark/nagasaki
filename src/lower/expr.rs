@@ -1,12 +1,14 @@
 use naga::{
     BinaryOperator, Block, Expression, Function, Handle, Literal, Scalar, Span, Statement, Type,
-    UnaryOperator,
+    TypeInner, UnaryOperator,
 };
 use syn::{BinOp, Expr};
 
+use super::call::lower_call;
 use super::emit::{emit, expr_kind};
 use super::env::{Env, Slot};
 use super::stmt::{lower_block, lower_if_expr};
+use super::vector::{lower_field, lower_index, splat_mix};
 use super::Context;
 use crate::Error;
 
@@ -40,9 +42,10 @@ pub(super) fn lower_expr(
             if let Some(op) = map_compound_op(&bin.op) {
                 return lower_assign(ctx, function, body, &bin.left, &bin.right, Some(op), env);
             }
-            let (left, left_ty) = lower_expr(ctx, function, body, &bin.left, env)?;
-            let (right, right_ty) = lower_expr(ctx, function, body, &bin.right, env)?;
+            let (mut left, mut left_ty) = lower_expr(ctx, function, body, &bin.left, env)?;
+            let (mut right, mut right_ty) = lower_expr(ctx, function, body, &bin.right, env)?;
             let op = map_bin_op(&bin.op)?;
+            splat_mix(ctx, function, body, &mut left, &mut left_ty, &mut right, &mut right_ty)?;
             let ty = bin_result_ty(ctx, op, left_ty, right_ty)?;
             let handle = emit(function, body, Expression::Binary { op, left, right })?;
             Ok((handle, ty))
@@ -51,7 +54,19 @@ pub(super) fn lower_expr(
             let (inner, inner_ty) = lower_expr(ctx, function, body, &unary.expr, env)?;
             let (op, ty) = match unary.op {
                 syn::UnOp::Neg(_) => (UnaryOperator::Negate, inner_ty),
-                syn::UnOp::Not(_) => (UnaryOperator::LogicalNot, ctx.intern_scalar(Scalar::BOOL)),
+                syn::UnOp::Not(_) => {
+                    let is_bool = matches!(
+                        ctx.as_scalar(inner_ty),
+                        Some(s) if s == Scalar::BOOL
+                    ) || matches!(
+                        ctx.as_vector(inner_ty),
+                        Some((_, s)) if s == Scalar::BOOL
+                    );
+                    if !is_bool {
+                        return Err(Error::TypeMismatch);
+                    }
+                    (UnaryOperator::LogicalNot, inner_ty)
+                }
                 _ => return Err(Error::UnsupportedExpr("unary".into())),
             };
             let handle = emit(function, body, Expression::Unary { op, expr: inner })?;
@@ -67,6 +82,9 @@ pub(super) fn lower_expr(
             env.pop_scope();
             tail.ok_or(Error::MissingBlockValue)
         }
+        Expr::Call(call) => lower_call(ctx, function, body, call, env),
+        Expr::Field(field) => lower_field(ctx, function, body, field, env),
+        Expr::Index(index) => lower_index(ctx, function, body, index, env),
         _ => Err(Error::UnsupportedExpr(expr_kind(expr))),
     }
 }
@@ -163,23 +181,36 @@ fn bin_result_ty(
     right: Handle<Type>,
 ) -> Result<Handle<Type>, Error> {
     use BinaryOperator as Bo;
+    if op == Bo::Multiply && left != right {
+        return super::matrix::mul_result_ty(ctx, left, right);
+    }
+    if left != right {
+        return Err(Error::TypeMismatch);
+    }
     match op {
         Bo::Equal
         | Bo::NotEqual
         | Bo::Less
         | Bo::LessEqual
         | Bo::Greater
-        | Bo::GreaterEqual
-        | Bo::LogicalAnd
-        | Bo::LogicalOr => Ok(ctx.intern_scalar(Scalar::BOOL)),
-        _ => {
-            if left != right {
-                return Err(Error::TypeMismatch);
+        | Bo::GreaterEqual => {
+            if let Some((size, _)) = ctx.as_vector(left) {
+                Ok(ctx.intern_vector(size, Scalar::BOOL))
+            } else {
+                Ok(ctx.intern_scalar(Scalar::BOOL))
             }
-            Ok(left)
         }
+        Bo::LogicalAnd | Bo::LogicalOr => {
+            match ctx.module.types[left].inner {
+                TypeInner::Scalar(s) if s == Scalar::BOOL => Ok(left),
+                TypeInner::Vector { scalar, .. } if scalar == Scalar::BOOL => Ok(left),
+                _ => Err(Error::TypeMismatch),
+            }
+        }
+        _ => Ok(left),
     }
 }
+
 
 fn map_bin_op(op: &BinOp) -> Result<BinaryOperator, Error> {
     Ok(match op {
