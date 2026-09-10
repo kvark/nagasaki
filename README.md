@@ -20,9 +20,11 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - implicit tail expressions and `return`
 - entry points: `#[vertex]` / `#[fragment]` / `#[compute]` + `#[workgroup_size(x,y,z)]`
 - bindings: `#[location(N)]`, `#[builtin(name)]` on args; `#[output(builtin(..))]` / `#[output(location(N))]` on the fn
+- calls to earlier free functions
+- math builtins: `dot`, `cross`, `normalize`, `length`, `distance`, `abs`, `min`, `max`, `clamp`, `mix`, `sin`, `cos`, …
 
 Not yet: labeled loops, `break` values, `for`, component stores (`v.x =`),
-references, methods (`dot`/`cross`), matrices, generics, structs, `@group`/`@binding`
+forward calls, methods, matrices, generics, structs, `@group`/`@binding`
 globals. `!` is `LogicalNot` (bool). Assignment to function arguments is
 rejected. Vector compare yields a `vecN<bool>`. Interpolation is filled in
 (`perspective` for floats, `flat` for integers) on vertex outputs / fragment inputs.
