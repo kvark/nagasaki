@@ -1,5 +1,5 @@
 use naga::{
-    Block, Expression, Function, Handle, Scalar, Span, SwizzleComponent, Type, VectorSize,
+    Block, Expression, Function, Handle, Scalar, SwizzleComponent, Type, VectorSize,
 };
 use syn::Expr;
 
@@ -191,16 +191,20 @@ pub(super) fn lower_index(
     env: &mut Env,
 ) -> Result<(Handle<Expression>, Handle<Type>), Error> {
     let (base, base_ty) = lower_expr(ctx, function, body, &index.expr, env)?;
-    let (vec_size, scalar) = ctx
-        .as_vector(base_ty)
-        .ok_or_else(|| Error::UnsupportedExpr("index".into()))?;
+    let (bound, result_ty) = if let Some((vec_size, scalar)) = ctx.as_vector(base_ty) {
+        (vec_size as u32, ctx.intern_scalar(scalar))
+    } else if let Some((columns, rows, scalar)) = ctx.as_matrix(base_ty) {
+        (columns as u32, ctx.intern_vector(rows, scalar))
+    } else {
+        return Err(Error::UnsupportedExpr("index".into()));
+    };
     if let Expr::Lit(syn::ExprLit {
         lit: syn::Lit::Int(int),
         ..
     }) = index.index.as_ref()
     {
         let idx: u32 = int.base10_parse().map_err(Error::from)?;
-        if idx >= vec_size as u32 {
+        if idx >= bound {
             return Err(Error::VecIndexRange);
         }
         let handle = emit(
@@ -208,7 +212,7 @@ pub(super) fn lower_index(
             body,
             Expression::AccessIndex { base, index: idx },
         )?;
-        return Ok((handle, ctx.intern_scalar(scalar)));
+        return Ok((handle, result_ty));
     }
     let (idx_expr, idx_ty) = lower_expr(ctx, function, body, &index.index, env)?;
     match ctx.as_scalar(idx_ty) {
@@ -223,5 +227,5 @@ pub(super) fn lower_index(
             index: idx_expr,
         },
     )?;
-    Ok((handle, ctx.intern_scalar(scalar)))
+    Ok((handle, result_ty))
 }

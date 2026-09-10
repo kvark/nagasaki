@@ -6,6 +6,8 @@ use syn::Expr;
 use super::emit::emit;
 use super::env::Env;
 use super::expr::lower_expr;
+use super::matrix::lower_mat_ctor;
+use super::parse_mat_ident;
 use super::parse_vec_ident;
 use super::vector::lower_vec_ctor;
 use super::Context;
@@ -27,6 +29,9 @@ pub(super) fn lower_call(
     if parse_vec_ident(&name).is_some() {
         return lower_vec_ctor(ctx, function, body, call, env);
     }
+    if parse_mat_ident(&name).is_some() {
+        return lower_mat_ctor(ctx, function, body, call, env);
+    }
     if let Some(spec) = math_spec(&name) {
         return lower_math(ctx, function, body, call, env, &name, spec);
     }
@@ -42,6 +47,7 @@ struct MathSpec {
 enum MathResult {
     SameAsFirst,
     ScalarOfFirst,
+    Transpose,
 }
 
 fn math_spec(name: &str) -> Option<MathSpec> {
@@ -81,8 +87,11 @@ fn math_spec(name: &str) -> Option<MathSpec> {
         "dot" => (Mf::Dot, 2, ScalarOfFirst),
         "distance" => (Mf::Distance, 2, ScalarOfFirst),
         "length" => (Mf::Length, 1, ScalarOfFirst),
+        "transpose" => (Mf::Transpose, 1, Transpose),
+        "determinant" => (Mf::Determinant, 1, ScalarOfFirst),
         _ => return None,
     };
+    // Abs was paired with sign incorrectly when name is sign
     let fun = match name {
         "sign" => Mf::Sign,
         _ => fun,
@@ -116,9 +125,18 @@ fn lower_math(
                 ctx.intern_scalar(s)
             } else if let Some((_, s)) = ctx.as_vector(tys[0]) {
                 ctx.intern_scalar(s)
+            } else if let Some((columns, rows, s)) = ctx.as_matrix(tys[0]) {
+                if columns != rows {
+                    return Err(Error::TypeMismatch);
+                }
+                ctx.intern_scalar(s)
             } else {
                 return Err(Error::TypeMismatch);
             }
+        }
+        MathResult::Transpose => {
+            let (columns, rows, s) = ctx.as_matrix(tys[0]).ok_or(Error::TypeMismatch)?;
+            ctx.intern_matrix(rows, columns, s)
         }
     };
     let handle = emit(
