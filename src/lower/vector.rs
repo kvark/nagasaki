@@ -126,6 +126,11 @@ pub(super) fn lower_field(
         syn::Member::Unnamed(_) => return Err(Error::UnsupportedExpr("tuple field".into())),
     };
     let (base, base_ty) = lower_expr(ctx, function, body, &field.base, env)?;
+    if ctx.as_struct(base_ty).is_some() {
+        return super::structure::lower_struct_field(
+            ctx, function, body, base, base_ty, &member,
+        );
+    }
     let (vec_size, scalar) = ctx
         .as_vector(base_ty)
         .ok_or_else(|| Error::UnsupportedExpr("field".into()))?;
