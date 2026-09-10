@@ -4,6 +4,7 @@ pub(crate) struct Binding {
     pub name: String,
     pub slot: Slot,
     pub ty: Handle<Type>,
+    pub writable: bool,
 }
 
 pub(crate) enum Slot {
@@ -30,7 +31,16 @@ impl Env {
     }
 
     pub fn push(&mut self, name: String, slot: Slot, ty: Handle<Type>) {
-        self.bindings.push(Binding { name, slot, ty });
+        self.push_rw(name, slot, ty, true);
+    }
+
+    pub fn push_rw(&mut self, name: String, slot: Slot, ty: Handle<Type>, writable: bool) {
+        self.bindings.push(Binding {
+            name,
+            slot,
+            ty,
+            writable,
+        });
     }
 
     pub fn lookup(&self, name: &str) -> Option<&Binding> {

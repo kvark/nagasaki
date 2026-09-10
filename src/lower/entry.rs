@@ -86,7 +86,7 @@ fn parse_binding_meta(attr: &Attribute) -> Result<Binding, Error> {
                 per_primitive: false,
             })
         }
-        _ => Err(Error::UnsupportedBinding("output".into())),
+        _ => Err(Error::UnsupportedBinding("return".into())),
     }
 }
 
@@ -156,7 +156,11 @@ fn fill_interpolation(
     is_input: bool,
     binding: &mut Binding,
 ) {
-    let Binding::Location { interpolation, .. } = binding else {
+    let Binding::Location {
+        interpolation,
+        ..
+    } = binding
+    else {
         return;
     };
     let needs = matches!(
@@ -232,6 +236,7 @@ pub(super) fn lower_entry(
     };
 
     let mut env = Env::default();
+    super::global::bind_globals(ctx, &mut function, &mut env);
     lower_signature(ctx, &mut function, &item.sig, &mut env)?;
 
     for (arg, fn_arg) in function.arguments.iter_mut().zip(item.sig.inputs.iter()) {
