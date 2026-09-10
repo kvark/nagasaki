@@ -56,4 +56,8 @@ pub enum Error {
     UnexpectedWorkgroupSize,
     #[error("entry point `{0}` is missing #[output(...)]")]
     MissingReturnBinding(String),
+    #[error("unknown function `{0}`")]
+    UnknownFunction(String),
+    #[error("wrong number of arguments for `{0}`")]
+    WrongArgCount(String),
 }
