@@ -36,4 +36,24 @@ pub enum Error {
     LoopLabel,
     #[error("`break` with a value is not supported")]
     BreakValue,
+    #[error("unsupported vector constructor `{0}`")]
+    BadVecCtor(String),
+    #[error("wrong number of components for vector constructor")]
+    VecCtorArgs,
+    #[error("unsupported swizzle `.{0}`")]
+    UnsupportedSwizzle(String),
+    #[error("vector component index out of range")]
+    VecIndexRange,
+    #[error("conflicting shader stage attributes")]
+    ConflictingStage,
+    #[error("unsupported binding `{0}`")]
+    UnsupportedBinding(String),
+    #[error("entry point argument `{0}` needs #[location] or #[builtin]")]
+    MissingArgBinding(String),
+    #[error("compute entry point needs #[workgroup_size]")]
+    MissingWorkgroupSize,
+    #[error("#[workgroup_size] is only valid on compute")]
+    UnexpectedWorkgroupSize,
+    #[error("entry point `{0}` is missing #[output(...)]")]
+    MissingReturnBinding(String),
 }
