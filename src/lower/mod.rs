@@ -1,12 +1,13 @@
 use naga::{
     Block, Function, FunctionArgument, FunctionResult, Handle, Module, Scalar, Span, Statement,
-    Type, TypeInner,
+    Type, TypeInner, VectorSize,
 };
 use syn::{FnArg, Item, ItemFn, ReturnType, Signature};
 
 use crate::Error;
 
 mod emit;
+mod entry;
 mod env;
 mod expr;
 mod stmt;
@@ -48,15 +49,65 @@ impl Context {
         )
     }
 
+    pub(super) fn intern_vector(&mut self, size: VectorSize, scalar: Scalar) -> Handle<Type> {
+        self.module.types.insert(
+            Type {
+                name: None,
+                inner: TypeInner::Vector { size, scalar },
+            },
+            Span::UNDEFINED,
+        )
+    }
+
+    pub(super) fn as_scalar(&self, ty: Handle<Type>) -> Option<Scalar> {
+        match self.module.types[ty].inner {
+            TypeInner::Scalar(scalar) => Some(scalar),
+            _ => None,
+        }
+    }
+
+    pub(super) fn as_vector(&self, ty: Handle<Type>) -> Option<(VectorSize, Scalar)> {
+        match self.module.types[ty].inner {
+            TypeInner::Vector { size, scalar } => Some((size, scalar)),
+            _ => None,
+        }
+    }
+
     pub(super) fn lower_type(&mut self, ty: &syn::Type) -> Result<Handle<Type>, Error> {
-        let ident = match ty {
-            syn::Type::Path(path) if path.qself.is_none() => path
-                .path
-                .get_ident()
-                .ok_or_else(|| Error::UnsupportedType("path type".into()))?,
+        let path = match ty {
+            syn::Type::Path(path) if path.qself.is_none() => path,
             _ => return Err(Error::UnsupportedType("non-path type".into())),
         };
-        match ident.to_string().as_str() {
+        if path.path.segments.len() != 1 {
+            return Err(Error::UnsupportedType("path type".into()));
+        }
+        let seg = &path.path.segments[0];
+        let name = seg.ident.to_string();
+        let type_arg = match &seg.arguments {
+            syn::PathArguments::None => None,
+            syn::PathArguments::AngleBracketed(args) if args.args.len() == 1 => {
+                match args.args.first() {
+                    Some(syn::GenericArgument::Type(inner)) => Some(inner),
+                    _ => return Err(Error::UnsupportedType(name)),
+                }
+            }
+            _ => return Err(Error::UnsupportedType(name)),
+        };
+
+        if let Some((size, shorthand)) = parse_vec_ident(&name) {
+            let scalar = match (shorthand, type_arg) {
+                (Some(scalar), None) => scalar,
+                (None, None) => Scalar::F32,
+                (None, Some(inner)) => lower_scalar_ident(inner)?,
+                (Some(_), Some(_)) => return Err(Error::UnsupportedType(name)),
+            };
+            return Ok(self.intern_vector(size, scalar));
+        }
+
+        if type_arg.is_some() {
+            return Err(Error::UnsupportedType(name));
+        }
+        match name.as_str() {
             "f32" => Ok(self.intern_scalar(Scalar::F32)),
             "u32" => Ok(self.intern_scalar(Scalar::U32)),
             "i32" => Ok(self.intern_scalar(Scalar::I32)),
@@ -65,7 +116,7 @@ impl Context {
         }
     }
 
-    fn lower_fn(&mut self, item: ItemFn) -> Result<Handle<Function>, Error> {
+    fn lower_fn(&mut self, item: ItemFn) -> Result<(), Error> {
         if !item.sig.generics.params.is_empty() {
             return Err(Error::UnsupportedItem(format!(
                 "generic function `{}`",
@@ -77,6 +128,16 @@ impl Context {
                 "async/extern function `{}`",
                 item.sig.ident
             )));
+        }
+
+        let info = entry::parse_fn_attrs(&item.attrs)?;
+        if info.stage.is_some() {
+            return entry::lower_entry(self, item, info);
+        }
+        if info.workgroup_size.is_some() || info.return_binding.is_some() {
+            return Err(Error::UnsupportedItem(
+                "entry-point attribute on a regular function".into(),
+            ));
         }
 
         let name = item.sig.ident.to_string();
@@ -105,11 +166,49 @@ impl Context {
             body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
         }
         function.body = body;
-        Ok(self.module.functions.append(function, Span::UNDEFINED))
+        self.module.functions.append(function, Span::UNDEFINED);
+        Ok(())
     }
 }
 
-fn lower_signature(
+/// Parse `vec2` / `Vec3` / `vec4f` / `vec3i` / `vec2u`.
+/// `None` scalar means "default f32, or infer from constructor args".
+pub(super) fn parse_vec_ident(name: &str) -> Option<(VectorSize, Option<Scalar>)> {
+    match name {
+        "vec2" | "Vec2" => Some((VectorSize::Bi, None)),
+        "vec3" | "Vec3" => Some((VectorSize::Tri, None)),
+        "vec4" | "Vec4" => Some((VectorSize::Quad, None)),
+        "vec2f" | "Vec2f" => Some((VectorSize::Bi, Some(Scalar::F32))),
+        "vec3f" | "Vec3f" => Some((VectorSize::Tri, Some(Scalar::F32))),
+        "vec4f" | "Vec4f" => Some((VectorSize::Quad, Some(Scalar::F32))),
+        "vec2i" | "Vec2i" => Some((VectorSize::Bi, Some(Scalar::I32))),
+        "vec3i" | "Vec3i" => Some((VectorSize::Tri, Some(Scalar::I32))),
+        "vec4i" | "Vec4i" => Some((VectorSize::Quad, Some(Scalar::I32))),
+        "vec2u" | "Vec2u" => Some((VectorSize::Bi, Some(Scalar::U32))),
+        "vec3u" | "Vec3u" => Some((VectorSize::Tri, Some(Scalar::U32))),
+        "vec4u" | "Vec4u" => Some((VectorSize::Quad, Some(Scalar::U32))),
+        _ => None,
+    }
+}
+
+fn lower_scalar_ident(ty: &syn::Type) -> Result<Scalar, Error> {
+    let ident = match ty {
+        syn::Type::Path(path) if path.qself.is_none() => path
+            .path
+            .get_ident()
+            .ok_or_else(|| Error::UnsupportedType("path type".into()))?,
+        _ => return Err(Error::UnsupportedType("non-scalar type argument".into())),
+    };
+    match ident.to_string().as_str() {
+        "f32" => Ok(Scalar::F32),
+        "u32" => Ok(Scalar::U32),
+        "i32" => Ok(Scalar::I32),
+        "bool" => Ok(Scalar::BOOL),
+        other => Err(Error::UnsupportedType(other.into())),
+    }
+}
+
+pub(super) fn lower_signature(
     ctx: &mut Context,
     function: &mut Function,
     sig: &Signature,
@@ -134,10 +233,9 @@ fn lower_signature(
                     ty,
                     binding: None,
                 });
-                let expr = function.expressions.append(
-                    naga::Expression::FunctionArgument(index),
-                    Span::UNDEFINED,
-                );
+                let expr = function
+                    .expressions
+                    .append(naga::Expression::FunctionArgument(index), Span::UNDEFINED);
                 env.push(name, Slot::Value(expr), ty);
             }
         }
