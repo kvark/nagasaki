@@ -14,6 +14,7 @@ mod expr;
 mod global;
 mod matrix;
 mod stmt;
+mod structure;
 mod vector;
 
 use emit::item_kind;
@@ -23,6 +24,7 @@ use stmt::lower_block;
 pub struct Context {
     pub module: Module,
     pub(super) globals: Vec<global::GlobalInfo>,
+    pub(super) structs: Vec<(String, Handle<Type>)>,
 }
 
 impl Context {
@@ -30,6 +32,7 @@ impl Context {
         Self {
             module: Module::default(),
             globals: Vec::new(),
+            structs: Vec::new(),
         }
     }
 
@@ -41,6 +44,7 @@ impl Context {
                 }
                 Item::Static(st) => global::lower_static(self, st)?,
                 Item::ForeignMod(fm) => global::lower_foreign_mod(self, fm)?,
+                Item::Struct(st) => structure::lower_struct_item(self, st)?,
                 other => return Err(Error::UnsupportedItem(item_kind(&other))),
             }
         }
@@ -160,7 +164,24 @@ impl Context {
             "u32" => Ok(self.intern_scalar(Scalar::U32)),
             "i32" => Ok(self.intern_scalar(Scalar::I32)),
             "bool" => Ok(self.intern_scalar(Scalar::BOOL)),
-            other => Err(Error::UnsupportedType(other.into())),
+            other => self
+                .struct_by_name(other)
+                .ok_or_else(|| Error::UnsupportedType(other.into())),
+        }
+    }
+
+    pub(super) fn struct_by_name(&self, name: &str) -> Option<Handle<Type>> {
+        self.structs
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, h)| *h)
+    }
+
+    pub(super) fn as_struct(&self, ty: Handle<Type>) -> Option<&[naga::StructMember]> {
+        match &self.module.types[ty].inner {
+            TypeInner::Struct { members, .. } => Some(members),
+            _ => None,
         }
     }
 
@@ -263,8 +284,6 @@ pub(super) fn parse_mat_ident(name: &str) -> Option<(VectorSize, VectorSize, Opt
         "mat3" | "Mat3" => Some((VectorSize::Tri, VectorSize::Tri, scalar)),
         "mat4" | "Mat4" => Some((VectorSize::Quad, VectorSize::Quad, scalar)),
         other => {
-            // matCxR / MatCxR
-            let bytes = other.as_bytes();
             let rest = if let Some(r) = other.strip_prefix("mat") {
                 r
             } else if let Some(r) = other.strip_prefix("Mat") {
@@ -275,8 +294,6 @@ pub(super) fn parse_mat_ident(name: &str) -> Option<(VectorSize, VectorSize, Opt
             let b = rest.as_bytes();
             if b.len() == 3 && b[1] == b'x' {
                 let (columns, rows) = pair(b[0] as char, b[2] as char)?;
-                // reject leftover from a bad suffix like mat2x3i until we add integer mats
-                let _ = bytes;
                 Some((columns, rows, scalar))
             } else {
                 None
