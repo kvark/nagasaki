@@ -117,6 +117,9 @@ fn lower_assign(
         Slot::Ptr(pointer) => pointer,
         Slot::Value(_) => return Err(Error::AssignToArgument(name)),
     };
+    if !binding.writable {
+        return Err(Error::AssignToReadonly(name));
+    }
     let (rhs, rhs_ty) = lower_expr(ctx, function, body, right, env)?;
     if rhs_ty != ty {
         return Err(Error::TypeMismatch);
