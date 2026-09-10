@@ -10,8 +10,10 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - free functions
 - scalars: `f32`, `u32`, `i32`, `bool`
 - vectors: `vec2`/`vec3`/`vec4` (default `f32`), `vecN<T>`, `vec2f`/`vec3i`/`vec4u`
+- matrices: `mat2`/`mat3`/`mat4` (square `f32`), `matCxR`, `mat4f`, `mat2x3<f32>`
 - constructors: `vec3(x, y, z)`, splat `vec3(x)`, mix `vec3(xy, z)`
-- components: `.x`/`.y`/`.z`/`.w`, swizzle `.xy`/`.zyx`, index `v[0]` / `v[i]`
+- matrix constructors: column vectors `mat4(c0,c1,c2,c3)` or column-major scalars
+- components: `.x`/`.y`/`.z`/`.w`, swizzle `.xy`/`.zyx`, index `v[0]` / `v[i]` / `m[0]`
 - literals, unary `-/!`, arithmetic / compare / bitwise ops (scalar splat on mix)
 - `let` / `let x: T = …` (runtime Store + Load; no const init)
 - `if` / `else` / `else if` as statement or value
@@ -21,10 +23,10 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - entry points: `#[vertex]` / `#[fragment]` / `#[compute]` + `#[workgroup_size(x,y,z)]`
 - bindings: `#[location(N)]`, `#[builtin(name)]` on args; `#[output(builtin(..))]` / `#[output(location(N))]` on the fn
 - calls to earlier free functions
-- math builtins: `dot`, `cross`, `normalize`, `length`, `distance`, `abs`, `min`, `max`, `clamp`, `mix`, `sin`, `cos`, …
+- math builtins: `dot`, `cross`, `normalize`, `length`, `distance`, `abs`, `min`, `max`, `clamp`, `mix`, `sin`, `cos`, `transpose`, `determinant`, …
 
 Not yet: labeled loops, `break` values, `for`, component stores (`v.x =`),
-forward calls, methods, matrices, generics, structs, `@group`/`@binding`
+forward calls, methods, generics, structs, `@group`/`@binding`
 globals. `!` is `LogicalNot` (bool). Assignment to function arguments is
 rejected. Vector compare yields a `vecN<bool>`. Interpolation is filled in
 (`perspective` for floats, `flat` for integers) on vertex outputs / fragment inputs.

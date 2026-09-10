@@ -1,7 +1,8 @@
 //! Native Rust → [`naga::Module`] frontend.
 //!
 //! v0 dialect: free functions, scalars (`f32` / `u32` / `i32` / `bool`),
-//! vectors (`vec2`/`vec3`/`vec4` and `vecN<T>`), literals, unary/binary operators,
+//! vectors (`vec2`/`vec3`/`vec4` and `vecN<T>`),
+//! matrices (`mat2`/`mat3`/`mat4` and `matCxR`), literals, unary/binary operators,
 //! `let`, assignment, `if`/`else`, `loop`/`while`, `return`, and
 //! `#[vertex]`/`#[fragment]`/`#[compute]` entry points.
 //! No references, methods, generics, or structs yet.

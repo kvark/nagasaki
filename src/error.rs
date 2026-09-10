@@ -60,4 +60,8 @@ pub enum Error {
     UnknownFunction(String),
     #[error("wrong number of arguments for `{0}`")]
     WrongArgCount(String),
+    #[error("unsupported matrix constructor `{0}`")]
+    BadMatCtor(String),
+    #[error("wrong number of components for matrix constructor")]
+    MatCtorArgs,
 }
