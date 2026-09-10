@@ -5,8 +5,8 @@
 //! matrices (`mat2`/`mat3`/`mat4` and `matCxR`), literals, unary/binary operators,
 //! `let`, assignment, `if`/`else`, `loop`/`while`, `return`, and
 //! `#[vertex]`/`#[fragment]`/`#[compute]` entry points,
-//! and `#[group]`/`#[binding]` globals.
-//! No references, methods, generics, or structs yet.
+//! `#[group]`/`#[binding]` globals, and named structs.
+//! No references, methods, or generics yet.
 
 mod error;
 mod lower;

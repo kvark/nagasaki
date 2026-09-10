@@ -70,4 +70,18 @@ pub enum Error {
     DuplicateGlobal(String),
     #[error("cannot assign to read-only global `{0}`")]
     AssignToReadonly(String),
+    #[error("duplicate struct `{0}`")]
+    DuplicateStruct(String),
+    #[error("unknown struct `{0}`")]
+    UnknownStruct(String),
+    #[error("struct `{0}` has no fields")]
+    EmptyStruct(String),
+    #[error("duplicate field `{0}`")]
+    DuplicateField(String),
+    #[error("unknown field `{0}`")]
+    UnknownField(String),
+    #[error("missing field `{0}`")]
+    MissingStructField(String),
+    #[error("wrong number of fields for struct `{0}`")]
+    StructFieldCount(String),
 }
