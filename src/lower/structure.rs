@@ -5,7 +5,7 @@ use syn::{Fields, ItemStruct};
 
 use super::emit::emit;
 use super::env::Env;
-use super::expr::lower_expr;
+use super::expr::lower_expr_hinted;
 use super::{Context, Typed};
 use crate::Error;
 
@@ -127,7 +127,13 @@ pub(super) fn lower_struct_lit(
             syn::Member::Named(ident) => ident.to_string(),
             syn::Member::Unnamed(_) => return Err(Error::UnsupportedExpr("tuple field".into())),
         };
-        let (expr, fty) = lower_expr(ctx, function, body, &field.expr, env)?;
+        // The member's type is known, so an untyped integer literal can follow
+        // it the way it follows a parameter type at a call.
+        let hint = expected
+            .iter()
+            .find(|(n, _)| *n == fname)
+            .and_then(|&(_, ty)| ctx.shape(ty).int_hint());
+        let (expr, fty) = lower_expr_hinted(ctx, function, body, &field.expr, env, hint)?;
         if provided.iter().any(|(n, _, _)| n == &fname) {
             return Err(Error::DuplicateField(fname));
         }

@@ -37,6 +37,24 @@ fn pointer_arg(
     Ok(place.pointer)
 }
 
+/// The type `T()` names, for a zero value: a vector, matrix, scalar, or struct.
+fn zero_value_type(ctx: &mut Context, name: &str) -> Option<Handle<naga::Type>> {
+    if let Some((size, shorthand)) = parse_vec_ident(name) {
+        return Some(ctx.intern_vector(size, shorthand.unwrap_or(naga::Scalar::F32)));
+    }
+    if let Some((columns, rows, shorthand)) = parse_mat_ident(name) {
+        return Some(ctx.intern_matrix(columns, rows, shorthand.unwrap_or(naga::Scalar::F32)));
+    }
+    let scalar = match name {
+        "f32" => naga::Scalar::F32,
+        "u32" => naga::Scalar::U32,
+        "i32" => naga::Scalar::I32,
+        "bool" => naga::Scalar::BOOL,
+        _ => return ctx.struct_by_name(name),
+    };
+    Some(ctx.intern_scalar(scalar))
+}
+
 fn callee_name(call: &syn::ExprCall) -> Option<String> {
     let Expr::Path(path) = call.func.as_ref() else {
         return None;
@@ -60,6 +78,12 @@ pub(super) fn lower_call_stmt(
         if let Some(op) = texture::texture_builtin(&name) {
             if op.is_statement() {
                 texture::lower_texture_call(ctx, function, body, call, env, &name, op)?;
+                return Ok(());
+            }
+        }
+        if let Some(op) = super::ray::ray_builtin(&name) {
+            if op.is_statement() {
+                super::ray::lower_ray_call(ctx, function, body, call, env, &name, op)?;
                 return Ok(());
             }
         }
@@ -241,6 +265,15 @@ pub(super) fn lower_call(
         }
         _ => return Err(Error::UnsupportedExpr("call".into())),
     };
+    // `T()` is WGSL's zero value, and the natural spelling for one here too.
+    if call.args.is_empty() {
+        if let Some(ty) = zero_value_type(ctx, &name) {
+            let handle = function
+                .expressions
+                .append(Expression::ZeroValue(ty), Span::UNDEFINED);
+            return Ok((handle, ty));
+        }
+    }
     if parse_vec_ident(&name).is_some() {
         return lower_vec_ctor(ctx, function, body, call, env);
     }
@@ -264,6 +297,12 @@ pub(super) fn lower_call(
                 return Err(Error::ValueFromStatement(name));
             }
             return texture::lower_texture_call(ctx, function, body, call, env, &name, op);
+        }
+        if let Some(op) = super::ray::ray_builtin(&name) {
+            if op.is_statement() {
+                return Err(Error::ValueFromStatement(name));
+            }
+            return super::ray::lower_ray_call(ctx, function, body, call, env, &name, op);
         }
         if barrier(&name).is_some() || name == "discard" {
             return Err(Error::ValueFromStatement(name));

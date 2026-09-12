@@ -72,6 +72,10 @@ pub enum Error {
     UnexpectedAddressSpace(String),
     #[error("`{0}` needs something that names storage as its first argument")]
     NotAPlace(String),
+    #[error("`{0}` needs a `ray_query` as its first argument")]
+    NotARayQuery(String),
+    #[error("`{0}` needs an `acceleration_structure`")]
+    NotAnAccelerationStructure(String),
     #[error("`{0}` needs an `atomic<T>` as its first argument")]
     NotAnAtomic(String),
     #[error("`{0}` is workgroup or private memory, so it takes no binding")]

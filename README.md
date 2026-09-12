@@ -42,6 +42,11 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
   `#[storage(read_write)]`, `#[workgroup]`, `#[private]`
 - atomics: `atomic<u32>` / `atomic<i32>`, `atomicAdd` / `atomicStore` / `atomicLoad` /
   `atomicMax` / … taking the variable directly rather than a reference
+- ray queries: `acceleration_structure`, `ray_query`, `RayDesc`, `RayIntersection`,
+  `rayQueryInitialize` / `Proceed` / `GetCommittedIntersection` / …, and the
+  predeclared `RAY_FLAG_*` and `RAY_QUERY_INTERSECTION_*` names
+- `binding_array<T>` and `binding_array<T, N>`
+- zero values: `T()` for a struct, vector, matrix or scalar
 - structs: `struct S { a: vec3, b: f32 }`, literals `S { a, b: x }`, field access `s.a`
 - arrays: `[T; N]` and literals `[a, b, c]`; `[T]` for a runtime-sized storage buffer
 - textures and samplers: `texture_2d<f32>`, `texture_storage_2d<Rgba8Unorm, Write>`,
@@ -53,7 +58,7 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
   fragment inputs, and multiple render targets
 
 Not yet: labeled loops, `break` values, `switch`, forward calls, methods, generics,
-ray queries, cooperative matrices, `const` arithmetic (Naga wants constants already
+cooperative matrices, `f16`, `const` arithmetic (Naga wants constants already
 folded). Swizzles are values, so `v.xy = a` is rejected — as it is in WGSL.
 Assignment to function arguments is rejected. Vector compare yields a `vecN<bool>`.
 
@@ -72,6 +77,18 @@ A function with a return type has to return on every path; `if c { a }` as a
 whole body is rejected rather than quietly falling off the end.
 
 A function you declare shadows a math builtin of the same name.
+
+### Validation
+
+`validate` uses Naga's default flags and no extra capabilities; `validate_unbound`
+drops `ValidationFlags::BINDINGS` for a host that assigns them; `validate_with`
+takes both, which is what a ray query needs (`Capabilities::RAY_QUERY`) and what
+a host validating against a real device wants anyway.
+
+`to_wgsl` refuses a module that traces a ray query — Naga's WGSL backend has no
+spelling for one and panics — with a reason rather than a panic. The module is
+still good: Naga's SPIR-V, MSL and HLSL backends handle ray queries, and a host
+taking a `naga::Module` directly never calls `to_wgsl`.
 
 ### Errors
 
@@ -140,6 +157,9 @@ layouts and bindings.
 
 Rust keywords are the one thing that forces a rename: Blade's `fn fs_main(in: VertexOutput)`
 has to call its argument something else.
+
+Of Blade's 37 shaders, 36 use only constructs the dialect covers; the exception is
+its cooperative-matrix matmul example.
 
 ## Example
 
