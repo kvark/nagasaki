@@ -1,9 +1,9 @@
-use naga::{Block, Expression, Function, LocalVariable, Span, Statement};
+use naga::{Block, Expression, Function, Handle, LocalVariable, Span, Statement, Type};
 use syn::{Block as SynBlock, Expr, Local, Pat, Stmt, Type as SynType};
 
 use super::emit::emit;
 use super::env::{Env, Slot};
-use super::expr::{lower_expr, lower_expr_hinted};
+use super::expr::{is_untyped_int, lower_expr, lower_expr_hinted};
 use super::{Context, Typed};
 use crate::Error;
 
@@ -113,7 +113,7 @@ fn lower_stmt_expr(
         Expr::While(while_expr) => lower_while(ctx, function, body, while_expr, env),
         Expr::Loop(loop_expr) => lower_loop(ctx, function, body, loop_expr, env),
         Expr::Break(brk) => lower_break(body, brk),
-        Expr::ForLoop(_) => Err(Error::UnsupportedStmt("`for` loop".into())),
+        Expr::ForLoop(for_expr) => lower_for(ctx, function, body, for_expr, env),
         Expr::Continue(cont) => lower_continue(body, cont),
         Expr::Block(b) => {
             env.push_scope();
@@ -192,6 +192,155 @@ fn lower_loop(
     Ok(())
 }
 
+/// `for i in a..b` / `a..=b`.
+///
+/// Rust evaluates the range once, before the loop, so both ends are lowered
+/// into the enclosing block; Naga keeps those expressions valid inside the
+/// loop. The counter is a local, the bound check opens the body, and the step
+/// goes in the loop's `continuing` block so `continue` still reaches it.
+fn lower_for(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    for_expr: &syn::ExprForLoop,
+    env: &mut Env,
+) -> Result<(), Error> {
+    if for_expr.label.is_some() {
+        return Err(Error::LoopLabel);
+    }
+    let Expr::Range(range) = strip_parens(&for_expr.expr) else {
+        return Err(Error::UnsupportedStmt("`for` over a non-range".into()));
+    };
+    let (Some(start), Some(end)) = (range.start.as_deref(), range.end.as_deref()) else {
+        return Err(Error::UnsupportedStmt("unbounded range".into()));
+    };
+    let name = match &*for_expr.pat {
+        Pat::Ident(ident) if ident.by_ref.is_none() => ident.ident.to_string(),
+        Pat::Wild(_) => "_".to_string(),
+        _ => return Err(Error::PatternParam),
+    };
+
+    // Whichever end is not an untyped literal fixes the counter's type, the
+    // same way `0..n` infers in Rust.
+    let (init, ty, bound) = if is_untyped_int(start) && !is_untyped_int(end) {
+        let (bound, ty) = lower_expr(ctx, function, body, end, env)?;
+        let hint = ctx.shape(ty).int_hint();
+        let (init, init_ty) = lower_expr_hinted(ctx, function, body, start, env, hint)?;
+        (init, init_ty, bound)
+    } else {
+        let (init, ty) = lower_expr(ctx, function, body, start, env)?;
+        let hint = ctx.shape(ty).int_hint();
+        let (bound, _) = lower_expr_hinted(ctx, function, body, end, env, hint)?;
+        (init, ty, bound)
+    };
+    match ctx.shape(ty).elem_kind() {
+        Some(naga::ScalarKind::Sint | naga::ScalarKind::Uint) => {}
+        _ => {
+            return Err(Error::UnsupportedStmt(
+                "`for` over a non-integer range".into(),
+            ))
+        }
+    }
+
+    let counter = function.local_variables.append(
+        LocalVariable {
+            name: Some(name.clone()),
+            ty,
+            init: None,
+        },
+        Span::UNDEFINED,
+    );
+    let pointer = function
+        .expressions
+        .append(Expression::LocalVariable(counter), Span::UNDEFINED);
+    body.push(
+        Statement::Store {
+            pointer,
+            value: init,
+        },
+        Span::UNDEFINED,
+    );
+
+    env.push_scope();
+    env.push(name, Slot::Ptr(pointer), ty);
+
+    // `if !(i < end) { break; }`
+    let mut loop_body = Block::new();
+    let current = emit(function, &mut loop_body, Expression::Load { pointer })?;
+    let condition = emit(
+        function,
+        &mut loop_body,
+        Expression::Binary {
+            op: match range.limits {
+                syn::RangeLimits::Closed(_) => naga::BinaryOperator::LessEqual,
+                syn::RangeLimits::HalfOpen(_) => naga::BinaryOperator::Less,
+            },
+            left: current,
+            right: bound,
+        },
+    )?;
+    let mut reject = Block::new();
+    reject.push(Statement::Break, Span::UNDEFINED);
+    loop_body.push(
+        Statement::If {
+            condition,
+            accept: Block::new(),
+            reject,
+        },
+        Span::UNDEFINED,
+    );
+    let _ = lower_block(ctx, function, &mut loop_body, &for_expr.body, env)?;
+
+    // `continuing { i += 1; }`
+    let mut continuing = Block::new();
+    let step = emit(function, &mut continuing, Expression::Load { pointer })?;
+    let one = function
+        .expressions
+        .append(Expression::Literal(int_one(ctx, ty)), Span::UNDEFINED);
+    let next = emit(
+        function,
+        &mut continuing,
+        Expression::Binary {
+            op: naga::BinaryOperator::Add,
+            left: step,
+            right: one,
+        },
+    )?;
+    continuing.push(
+        Statement::Store {
+            pointer,
+            value: next,
+        },
+        Span::UNDEFINED,
+    );
+    env.pop_scope();
+
+    body.push(
+        Statement::Loop {
+            body: loop_body,
+            continuing,
+            break_if: None,
+        },
+        Span::UNDEFINED,
+    );
+    Ok(())
+}
+
+fn int_one(ctx: &Context, ty: Handle<Type>) -> naga::Literal {
+    match ctx.shape(ty).scalar().map(|s| s.kind) {
+        Some(naga::ScalarKind::Uint) => naga::Literal::U32(1),
+        _ => naga::Literal::I32(1),
+    }
+}
+
+fn strip_parens(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(inner) => strip_parens(&inner.expr),
+        Expr::Group(inner) => strip_parens(&inner.expr),
+        other => other,
+    }
+}
+
 fn lower_break(body: &mut Block, brk: &syn::ExprBreak) -> Result<(), Error> {
     if brk.label.is_some() {
         return Err(Error::LoopLabel);
@@ -218,23 +367,33 @@ fn lower_local(
     local: &Local,
     env: &mut Env,
 ) -> Result<(), Error> {
-    let init = local.init.as_ref().ok_or(Error::MissingLetInit)?;
-    if init.diverge.is_some() {
-        return Err(Error::UnsupportedStmt("let else".into()));
-    }
     let (name, annot) = bind_ident_pat(&local.pat)?;
     let annot = annot.map(|ty| ctx.lower_type(ty)).transpose()?;
-    let hint = annot.and_then(|ty| ctx.shape(ty).int_hint());
-    let (value, value_ty) = lower_expr_hinted(ctx, function, body, &init.expr, env, hint)?;
-    let ty = match annot {
-        Some(ty) => {
-            if ty != value_ty {
+
+    // `let x: T;` declares the slot and leaves it to a later assignment, the
+    // way WGSL's bare `var x: T;` does. Without an annotation there is nothing
+    // to infer the type from.
+    let init = match &local.init {
+        Some(init) if init.diverge.is_some() => {
+            return Err(Error::UnsupportedStmt("let else".into()))
+        }
+        Some(init) => Some(&*init.expr),
+        None if annot.is_some() => None,
+        None => return Err(Error::MissingLetInit),
+    };
+
+    let (value, ty) = match init {
+        Some(expr) => {
+            let hint = annot.and_then(|ty| ctx.shape(ty).int_hint());
+            let (value, value_ty) = lower_expr_hinted(ctx, function, body, expr, env, hint)?;
+            if matches!(annot, Some(ty) if ty != value_ty) {
                 return Err(Error::TypeMismatch);
             }
-            ty
+            (Some(value), value_ty)
         }
-        None => value_ty,
+        None => (None, annot.expect("checked above")),
     };
+
     let local_var = function.local_variables.append(
         LocalVariable {
             name: Some(name.clone()),
@@ -246,7 +405,9 @@ fn lower_local(
     let pointer = function
         .expressions
         .append(Expression::LocalVariable(local_var), Span::UNDEFINED);
-    body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
+    if let Some(value) = value {
+        body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
+    }
     env.push(name, Slot::Ptr(pointer), ty);
     Ok(())
 }

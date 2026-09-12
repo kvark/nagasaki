@@ -43,9 +43,10 @@ pub(super) fn lower_expr_hinted(
                 .path
                 .get_ident()
                 .ok_or_else(|| Error::UnsupportedExpr("path".into()))?;
-            let binding = env
-                .lookup(&ident.to_string())
-                .ok_or_else(|| Error::UnknownIdent(ident.to_string()))?;
+            let name = ident.to_string();
+            let Some(binding) = env.lookup(&name) else {
+                return lower_const_ref(ctx, function, &name);
+            };
             let ty = binding.ty;
             let expr = match binding.slot {
                 Slot::Value(handle) => handle,
@@ -77,6 +78,20 @@ pub(super) fn lower_expr_hinted(
         Expr::Struct(lit) => super::structure::lower_struct_lit(ctx, function, body, lit, env),
         _ => Err(Error::UnsupportedExpr(expr_kind(expr))),
     }
+}
+
+/// A module-level `const` referenced from a function body.
+fn lower_const_ref(ctx: &Context, function: &mut Function, name: &str) -> Result<Typed, Error> {
+    let info = ctx
+        .consts
+        .iter()
+        .find(|c| c.name == name)
+        .ok_or_else(|| Error::UnknownIdent(name.into()))?;
+    // `Constant` is already a constant expression; emitting it would be wrong.
+    let handle = function
+        .expressions
+        .append(Expression::Constant(info.handle), Span::UNDEFINED);
+    Ok((handle, info.ty))
 }
 
 fn lower_unary(
@@ -294,7 +309,22 @@ fn lower_lit(
     lit: &syn::ExprLit,
     hint: Option<Scalar>,
 ) -> Result<Typed, Error> {
-    let (literal, ty) = match &lit.lit {
+    let (literal, ty) = const_literal(ctx, lit, hint)?;
+    let handle = function
+        .expressions
+        .append(Expression::Literal(literal), Span::UNDEFINED);
+    Ok((handle, ty))
+}
+
+/// The Naga literal and type a Rust literal denotes, with `hint` standing in
+/// for Rust's integer inference. Shared with constant lowering, which builds
+/// its expressions in a different arena.
+pub(super) fn const_literal(
+    ctx: &mut Context,
+    lit: &syn::ExprLit,
+    hint: Option<Scalar>,
+) -> Result<(Literal, Handle<Type>), Error> {
+    Ok(match &lit.lit {
         syn::Lit::Float(f) => {
             if f.suffix() == "f64" {
                 return Err(Error::UnsupportedType("f64".into()));
@@ -319,11 +349,7 @@ fn lower_lit(
         }
         syn::Lit::Bool(b) => (Literal::Bool(b.value()), ctx.intern_scalar(Scalar::BOOL)),
         _ => return Err(Error::UnsupportedExpr("literal".into())),
-    };
-    let handle = function
-        .expressions
-        .append(Expression::Literal(literal), Span::UNDEFINED);
-    Ok((handle, ty))
+    })
 }
 
 /// Is this an integer literal with no suffix, and so open to a type hint?

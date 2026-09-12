@@ -114,7 +114,7 @@ fn sign_is_not_abs() {
 }
 
 #[test]
-fn names_a_for_loop_in_the_error() {
-    let msg = reject("fn f(a: f32) -> f32 { for i in 0..3 { } a }");
-    assert!(msg.contains("for"), "{msg}");
+fn names_an_unsupported_construct_in_the_error() {
+    let msg = reject("fn f(a: f32) -> f32 { match a { _ => a } }");
+    assert!(msg.contains("match"), "{msg}");
 }
