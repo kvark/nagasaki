@@ -88,6 +88,7 @@ pub(super) fn lower_expr_hinted(
         }
         Expr::Struct(lit) => super::structure::lower_struct_lit(ctx, function, body, lit, env),
         Expr::Array(array) => lower_array_lit(ctx, function, body, array, env),
+        Expr::Reference(reference) => lower_reference(ctx, function, body, reference, env),
         _ => Err(Error::UnsupportedExpr(expr_kind(expr))),
     }
 }
@@ -250,6 +251,29 @@ fn lower_compound_assign(
     )?;
     body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
     Ok((value, ty))
+}
+
+/// `&mut x` / `&x`: a pointer to storage, for an out-parameter.
+///
+/// Naga wants the pointer's address space to match where the storage lives, so
+/// the place's own space comes along rather than being assumed.
+fn lower_reference(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    reference: &syn::ExprReference,
+    env: &mut Env,
+) -> Result<Typed, Error> {
+    let place = lower_place(ctx, function, body, &reference.expr, env)?
+        .ok_or(Error::InvalidAssignTarget)?;
+    if reference.mutability.is_some() && !place.writable {
+        return Err(Error::AssignToReadonly(place.root));
+    }
+    let ty = ctx.intern_handle_type(naga::TypeInner::Pointer {
+        base: place.ty,
+        space: place.space,
+    });
+    Ok((place.pointer, ty))
 }
 
 /// `[a, b, c]`: a fixed-size array, typed from its first element.

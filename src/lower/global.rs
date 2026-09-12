@@ -13,6 +13,7 @@ pub(crate) struct GlobalInfo {
     pub handle: Handle<GlobalVariable>,
     pub ty: Handle<Type>,
     pub writable: bool,
+    pub space: AddressSpace,
 }
 
 #[derive(Clone, Copy)]
@@ -46,7 +47,7 @@ pub(super) fn bind_globals(ctx: &Context, function: &mut Function, env: &mut Env
         } else {
             Slot::Ptr(expr)
         };
-        env.push_rw(g.name.clone(), slot, g.ty, g.writable);
+        env.push_in(g.name.clone(), slot, g.ty, g.writable, g.space);
     }
 }
 
@@ -157,6 +158,7 @@ fn finish_global(
         handle,
         ty,
         writable,
+        space,
     });
     Ok(())
 }

@@ -72,10 +72,12 @@ pub fn interface(module: &naga::Module) -> String {
     }
     for point in &module.entry_points {
         out.push_str(&format!("entry {} {:?}(", point.name, point.stage));
+        // Argument names are not part of the interface -- Blade matches vertex
+        // attributes by struct *field* name, which type_name still carries --
+        // and a port sometimes has to rename one around a Rust keyword.
         for arg in &point.function.arguments {
             out.push_str(&format!(
-                "{}: {} {:?}, ",
-                arg.name.as_deref().unwrap_or("?"),
+                "{} {:?}, ",
                 type_name(module, arg.ty),
                 arg.binding
             ));
