@@ -149,11 +149,11 @@ for the host to fill in — which is how Blade supplies vertex attributes.
 ### Blade
 
 `tests/blade_shaders.rs` ports shaders from [Blade][blade] — bunnymark, egui,
-skin, debug-blit, colour and quaternion helpers, the random-number generator,
-and particle and post-process compute passes. Five of them are checked against
-the WGSL they came from: Naga parses the original, nagasaki parses the port, and
-the two modules must describe the same globals, functions, entry points, struct
-layouts and bindings.
+skin, debug-blit, the a-trous denoiser, colour and quaternion helpers, the
+random-number generator, and particle and post-process compute passes. Five of
+them are checked against the WGSL they came from: Naga parses the original,
+nagasaki parses the port, and the two modules must describe the same globals,
+functions, entry points, struct layouts and bindings.
 
 Rust keywords are the one thing that forces a rename: Blade's `fn fs_main(in: VertexOutput)`
 has to call its argument something else.
