@@ -446,3 +446,293 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
 
     assert_ports(ORIGINAL, PORT);
 }
+
+/// `blade-egui/shader.wgsl`, whole — checked against the original.
+#[test]
+fn egui() {
+    const ORIGINAL: &str = r#"
+struct VertexOutput {
+    @location(0) tex_coord: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @builtin(position) position: vec4<f32>,
+};
+
+struct Uniforms {
+    screen_size: vec2<f32>,
+    convert_to_linear: f32,
+    padding: f32,
+};
+var<uniform> r_uniforms: Uniforms;
+
+struct Vertex {
+    pos: vec2<f32>,
+    uv: vec2<f32>,
+    color: u32,
+}
+
+fn linear_from_gamma(srgb: vec3<f32>) -> vec3<f32> {
+    let cutoff = srgb < vec3<f32>(0.04045);
+    let lower = srgb / vec3<f32>(12.92);
+    let higher = pow((srgb + vec3<f32>(0.055)) / vec3<f32>(1.055), vec3<f32>(2.4));
+    return select(higher, lower, cutoff);
+}
+
+@vertex
+fn vs_main(input: Vertex) -> VertexOutput {
+    var out: VertexOutput;
+    out.tex_coord = input.uv;
+    out.color = unpack4x8unorm(input.color);
+    out.position = vec4<f32>(
+        2.0 * input.pos.x / r_uniforms.screen_size.x - 1.0,
+        1.0 - 2.0 * input.pos.y / r_uniforms.screen_size.y,
+        0.0,
+        1.0,
+    );
+    return out;
+}
+
+var r_texture: texture_2d<f32>;
+var r_sampler: sampler;
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let blended = in.color * textureSample(r_texture, r_sampler, in.tex_coord);
+    return vec4f(linear_from_gamma(blended.xyz), blended.a);
+}
+"#;
+
+    // `in` is a Rust keyword, so the fragment argument is renamed; everything
+    // else is the shader as written.
+    const PORT: &str = r#"
+        struct VertexOutput {
+            #[location(0)] tex_coord: vec2,
+            #[location(1)] color: vec4,
+            #[builtin(position)] position: vec4,
+        }
+
+        struct Uniforms {
+            screen_size: vec2,
+            convert_to_linear: f32,
+            padding: f32,
+        }
+        static r_uniforms: Uniforms = ();
+
+        struct Vertex {
+            pos: vec2,
+            uv: vec2,
+            color: u32,
+        }
+
+        fn linear_from_gamma(srgb: vec3) -> vec3 {
+            let cutoff = srgb < vec3(0.04045);
+            let lower = srgb / vec3(12.92);
+            let higher = pow((srgb + vec3(0.055)) / vec3(1.055), vec3(2.4));
+            select(higher, lower, cutoff)
+        }
+
+        #[vertex]
+        fn vs_main(input: Vertex) -> VertexOutput {
+            let out: VertexOutput;
+            out.tex_coord = input.uv;
+            out.color = unpack4x8unorm(input.color);
+            out.position = vec4(
+                2.0 * input.pos.x / r_uniforms.screen_size.x - 1.0,
+                1.0 - 2.0 * input.pos.y / r_uniforms.screen_size.y,
+                0.0,
+                1.0,
+            );
+            out
+        }
+
+        static r_texture: texture_2d<f32> = ();
+        static r_sampler: sampler = ();
+
+        #[fragment]
+        #[output(location(0))]
+        fn fs_main(vo: VertexOutput) -> vec4 {
+            let blended = vo.color * textureSample(r_texture, r_sampler, vo.tex_coord);
+            vec4f(linear_from_gamma(blended.xyz), blended.a)
+        }
+    "#;
+
+    let wgsl = roundtrip_unbound(PORT);
+    assert!(wgsl.contains("unpack4x8unorm"), "{wgsl}");
+    assert_ports(ORIGINAL, PORT);
+}
+
+/// `blade-render/code/skin.wgsl` with its include inlined, checked against the
+/// original.
+#[test]
+fn skin() {
+    const ORIGINAL: &str = r#"
+struct Vertex {
+    position: vec3<f32>,
+    bitangent_sign: f32,
+    tex_coords: vec2<f32>,
+    normal: u32,
+    tangent: u32,
+}
+
+struct SkinVertex {
+    joints: u32,
+    weights: vec4<f32>,
+}
+
+struct SkinDispatch {
+    vertex_count: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+var<uniform> skin_dispatch: SkinDispatch;
+var<storage, read> source: array<Vertex>;
+var<storage, read> skin_source: array<SkinVertex>;
+var<storage, read_write> destination: array<Vertex>;
+
+fn decode_normal(raw: u32) -> vec3<f32> {
+    return unpack4x8snorm(raw).xyz;
+}
+
+fn encode_normal(n: vec3<f32>) -> u32 {
+    return pack4x8snorm(vec4<f32>(n, 0.0));
+}
+
+fn normalize_or_zero(v: vec3<f32>) -> vec3<f32> {
+    let len2 = dot(v, v);
+    if (len2 < 1.0e-20) {
+        return vec3<f32>(0.0);
+    }
+    return v * inverseSqrt(len2);
+}
+
+fn skin_stored_vertex(input: Vertex, skin: SkinVertex, linear: mat3x3<f32>) -> Vertex {
+    var out = input;
+    out.normal = encode_normal(normalize_or_zero(linear * decode_normal(input.normal)));
+    out.tangent = encode_normal(normalize_or_zero(linear * decode_normal(input.tangent)));
+    out.bitangent_sign *= sign(determinant(linear));
+    return out;
+}
+
+@compute
+@workgroup_size(64, 1, 1)
+fn skin(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let i = global_id.x;
+    if (i >= skin_dispatch.vertex_count) {
+        return;
+    }
+    destination[i] = skin_stored_vertex(source[i], skin_source[i], mat3x3<f32>());
+}
+"#;
+
+    const PORT: &str = r#"
+        struct Vertex {
+            position: vec3,
+            bitangent_sign: f32,
+            tex_coords: vec2,
+            normal: u32,
+            tangent: u32,
+        }
+
+        struct SkinVertex {
+            joints: u32,
+            weights: vec4,
+        }
+
+        struct SkinDispatch {
+            vertex_count: u32,
+            _pad0: u32,
+            _pad1: u32,
+            _pad2: u32,
+        }
+
+        static skin_dispatch: SkinDispatch = ();
+        #[storage] static source: [Vertex] = ();
+        #[storage] static skin_source: [SkinVertex] = ();
+        #[storage(read_write)] static destination: [Vertex] = ();
+
+        fn decode_normal(raw: u32) -> vec3 {
+            unpack4x8snorm(raw).xyz
+        }
+
+        fn encode_normal(n: vec3) -> u32 {
+            pack4x8snorm(vec4(n, 0.0))
+        }
+
+        fn normalize_or_zero(v: vec3) -> vec3 {
+            let len2 = dot(v, v);
+            if len2 < 1.0e-20 {
+                return vec3(0.0);
+            }
+            v * inverseSqrt(len2)
+        }
+
+        fn skin_stored_vertex(input: Vertex, skin: SkinVertex, linear: mat3) -> Vertex {
+            let out = input;
+            out.normal = encode_normal(normalize_or_zero(linear * decode_normal(input.normal)));
+            out.tangent = encode_normal(normalize_or_zero(linear * decode_normal(input.tangent)));
+            out.bitangent_sign *= sign(determinant(linear));
+            out
+        }
+
+        #[compute]
+        #[workgroup_size(64, 1, 1)]
+        fn skin(#[builtin(global_invocation_id)] global_id: vec3<u32>) {
+            let i = global_id.x;
+            if i >= skin_dispatch.vertex_count {
+                return;
+            }
+            let m: mat3;
+            destination[i] = skin_stored_vertex(source[i], skin_source[i], m);
+        }
+    "#;
+
+    let wgsl = roundtrip_unbound(PORT);
+    assert!(wgsl.contains("pack4x8snorm"), "{wgsl}");
+    assert!(wgsl.contains("destination["), "{wgsl}");
+    assert_ports(ORIGINAL, PORT);
+}
+
+/// The random-number generator from `blade-render/code/random.inc.wgsl`, which
+/// threads its state through a pointer parameter.
+#[test]
+fn random_state() {
+    let wgsl = roundtrip_unbound(
+        r#"
+        struct RandomState {
+            seed: u32,
+            index: u32,
+        }
+
+        fn random_init(pixel_index: u32, frame_index: u32) -> RandomState {
+            let rs: RandomState;
+            rs.seed = pixel_index * 1664525u32 + frame_index * 1013904223u32;
+            rs.index = 0u32;
+            rs
+        }
+
+        fn random_u32(rng: &mut RandomState) -> u32 {
+            rng.index += 1;
+            rng.seed = rng.seed * 1664525u32 + 1013904223u32;
+            let word = (rng.seed >> ((rng.seed >> 28) + 4)) ^ rng.seed;
+            (word >> 22) ^ word
+        }
+
+        fn random_gen(rng: &mut RandomState) -> f32 {
+            (random_u32(rng) >> 8) as f32 / 16777216.0
+        }
+
+        #[compute]
+        #[workgroup_size(8, 8)]
+        fn noise(#[builtin(global_invocation_id)] gid: vec3<u32>) {
+            let rng = random_init(gid.x + gid.y * 1920u32, 0u32);
+            let total = 0.0;
+            for _i in 0..4u32 {
+                total += random_gen(&mut rng);
+            }
+        }
+        "#,
+    );
+    assert!(wgsl.contains("ptr<function, RandomState>"), "{wgsl}");
+    assert!(wgsl.contains("random_gen"), "{wgsl}");
+}

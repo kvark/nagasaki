@@ -5,7 +5,7 @@ use naga::{
 use syn::{Attribute, FnArg, ItemFn, LitInt, Meta, ReturnType};
 
 use super::env::Env;
-use super::{lower_signature, Context};
+use super::{is_unit, lower_signature, Context};
 use crate::Error;
 
 #[derive(Default)]
@@ -157,10 +157,6 @@ fn map_builtin(name: &str) -> Result<BuiltIn, Error> {
         "frag_depth" => BuiltIn::FragDepth,
         other => return Err(Error::UnsupportedBinding(other.into())),
     })
-}
-
-fn is_unit(ty: &syn::Type) -> bool {
-    matches!(ty, syn::Type::Tuple(t) if t.elems.is_empty())
 }
 
 /// Only vertex outputs and fragment inputs are interpolated, so only they need

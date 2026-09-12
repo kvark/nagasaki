@@ -1,4 +1,4 @@
-use naga::{Block, Expression, Function, MathFunction, Span, Statement};
+use naga::{Block, Expression, Function, Handle, MathFunction, Span, Statement};
 use syn::Expr;
 
 use super::emit::emit;
@@ -11,6 +11,31 @@ use super::texture;
 use super::vector::lower_vec_ctor;
 use super::{Context, Shape, Typed};
 use crate::Error;
+
+/// The pointer for a `ptr<_, base>` parameter, from `&mut x`, `&x`, or a name
+/// that already stands for storage.
+fn pointer_arg(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    arg: &Expr,
+    env: &mut Env,
+    base: Handle<naga::Type>,
+) -> Result<Handle<Expression>, Error> {
+    let (target, wants_write) = match arg {
+        Expr::Reference(reference) => (&*reference.expr, reference.mutability.is_some()),
+        other => (other, false),
+    };
+    let place = super::place::lower_place(ctx, function, body, target, env)?
+        .ok_or(Error::InvalidAssignTarget)?;
+    if wants_write && !place.writable {
+        return Err(Error::AssignToReadonly(place.root));
+    }
+    if place.ty != base {
+        return Err(Error::TypeMismatch);
+    }
+    Ok(place.pointer)
+}
 
 fn callee_name(call: &syn::ExprCall) -> Option<String> {
     let Expr::Path(path) = call.func.as_ref() else {
@@ -56,8 +81,12 @@ pub(super) fn lower_call_stmt(
             return lower_atomic(ctx, function, body, call, env, &name, fun, false).map(|_| ());
         }
     }
-    let _ = lower_call(ctx, function, body, call, env)?;
-    Ok(())
+    match lower_call(ctx, function, body, call, env) {
+        Ok(_) => Ok(()),
+        // The call was lowered; it simply had nothing to hand back.
+        Err(Error::ValueFromStatement(_)) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// `arrayLength(buf)`: Naga wants a pointer to the runtime-sized array, which
@@ -501,7 +530,7 @@ fn lower_fn_call(
     env: &mut Env,
     name: &str,
 ) -> Result<Typed, Error> {
-    let (callee, expected, ret_ty) = {
+    let (callee, expected, ret_ty): (_, Vec<_>, Option<_>) = {
         let found = ctx
             .module
             .functions
@@ -509,12 +538,7 @@ fn lower_fn_call(
             .find(|(_, f)| f.name.as_deref() == Some(name));
         let (handle, func) = found.ok_or_else(|| Error::UnknownFunction(name.into()))?;
         let expected: Vec<_> = func.arguments.iter().map(|a| a.ty).collect();
-        let ret = func
-            .result
-            .as_ref()
-            .map(|r| r.ty)
-            .ok_or_else(|| Error::MissingReturnType(name.into()))?;
-        (handle, expected, ret)
+        (handle, expected, func.result.as_ref().map(|r| r.ty))
     };
 
     if expected.len() != call.args.len() {
@@ -522,6 +546,13 @@ fn lower_fn_call(
     }
     let mut arg_values = Vec::new();
     for (arg, &want) in call.args.iter().zip(expected.iter()) {
+        // A pointer parameter takes the storage itself. `&mut x` borrows it;
+        // a name that is already a pointer parameter passes straight through,
+        // the way a Rust reborrow does.
+        if let Some(base) = ctx.pointee(want) {
+            arg_values.push(pointer_arg(ctx, function, body, arg, env, base)?);
+            continue;
+        }
         let hint = ctx.shape(want).int_hint();
         let (h, ty) = lower_expr_hinted(ctx, function, body, arg, env, hint)?;
         if ty != want {
@@ -530,16 +561,22 @@ fn lower_fn_call(
         arg_values.push(h);
     }
 
-    let result = function
-        .expressions
-        .append(Expression::CallResult(callee), Span::UNDEFINED);
+    // A function with no return type produces nothing to bind.
+    let result = ret_ty.map(|_| {
+        function
+            .expressions
+            .append(Expression::CallResult(callee), Span::UNDEFINED)
+    });
     body.push(
         Statement::Call {
             function: callee,
             arguments: arg_values,
-            result: Some(result),
+            result,
         },
         Span::UNDEFINED,
     );
-    Ok((result, ret_ty))
+    match (result, ret_ty) {
+        (Some(result), Some(ty)) => Ok((result, ty)),
+        _ => Err(Error::ValueFromStatement(name.into())),
+    }
 }

@@ -1,8 +1,8 @@
 use core::num::NonZeroU32;
 
 use naga::{
-    ArraySize, Block, Expression, Function, FunctionArgument, FunctionResult, Handle, Module,
-    Scalar, ScalarKind, Span, Statement, Type, TypeInner, VectorSize,
+    AddressSpace, ArraySize, Block, Expression, Function, FunctionArgument, FunctionResult, Handle,
+    Module, Scalar, ScalarKind, Span, Statement, Type, TypeInner, VectorSize,
 };
 use syn::{FnArg, Item, ItemFn, ReturnType, Signature};
 
@@ -212,6 +212,17 @@ impl Context {
                 return self.intern_array(base, ArraySize::Constant(len));
             }
             syn::Type::Paren(inner) => return self.lower_type(&inner.elem),
+            // `&mut T` is WGSL's `ptr<function, T>`: an out-parameter.
+            syn::Type::Reference(reference) => {
+                if reference.lifetime.is_some() {
+                    return Err(Error::UnsupportedType("lifetime".into()));
+                }
+                let base = self.lower_type(&reference.elem)?;
+                return Ok(self.intern_handle_type(TypeInner::Pointer {
+                    base,
+                    space: AddressSpace::Function,
+                }));
+            }
             _ => return Err(Error::UnsupportedType("non-path type".into())),
         };
         if path.path.segments.len() != 1 {
@@ -333,6 +344,14 @@ impl Context {
             .map(|(_, h)| *h)
     }
 
+    /// What `ty` points at, if it is a pointer.
+    pub(super) fn pointee(&self, ty: Handle<Type>) -> Option<Handle<Type>> {
+        match self.module.types[ty].inner {
+            TypeInner::Pointer { base, .. } => Some(base),
+            _ => None,
+        }
+    }
+
     pub(super) fn as_array(&self, ty: Handle<Type>) -> Option<(Handle<Type>, ArraySize)> {
         match self.module.types[ty].inner {
             TypeInner::Array { base, size, .. } => Some((base, size)),
@@ -398,18 +417,21 @@ impl Context {
 
         let name = item.sig.ident.to_string();
         self.claim_fn_name(&name)?;
-        let result_ty = match &item.sig.output {
-            ReturnType::Type(_, ty) => self.lower_type(ty)?,
-            ReturnType::Default => return Err(Error::MissingReturnType(name)),
+        // A function with no return type produces nothing, as in Rust; calls to
+        // it are statements.
+        let result = match &item.sig.output {
+            ReturnType::Type(_, ty) if is_unit(ty) => None,
+            ReturnType::Type(_, ty) => Some(FunctionResult {
+                ty: self.lower_type(ty)?,
+                binding: None,
+            }),
+            ReturnType::Default => None,
         };
 
         let mut function = Function {
             name: Some(name),
             arguments: Vec::new(),
-            result: Some(FunctionResult {
-                ty: result_ty,
-                binding: None,
-            }),
+            result,
             ..Default::default()
         };
 
@@ -424,7 +446,7 @@ impl Context {
             Some((value, _)) => {
                 body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED)
             }
-            None if !always_jumps(&body) => {
+            None if function.result.is_some() && !always_jumps(&body) => {
                 return Err(Error::MissingReturn(function.name.unwrap_or_default()))
             }
             None => {}
@@ -527,6 +549,11 @@ fn lower_scalar_ident(ty: &syn::Type) -> Result<Scalar, Error> {
     }
 }
 
+/// Is this the unit type, `()`?
+pub(super) fn is_unit(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Tuple(t) if t.elems.is_empty())
+}
+
 pub(super) fn lower_signature(
     ctx: &mut Context,
     function: &mut Function,
@@ -554,8 +581,26 @@ pub(super) fn lower_signature(
                 });
                 let expr = function
                     .expressions
-                    .append(naga::Expression::FunctionArgument(index), Span::UNDEFINED);
-                env.push(name, Slot::Value(expr), ty);
+                    .append(Expression::FunctionArgument(index), Span::UNDEFINED);
+                // A pointer parameter names storage the caller owns, so it
+                // binds as a place: `r.field = x` writes through it, and `&T`
+                // marks the write as not allowed.
+                match ctx.pointee(ty) {
+                    Some(base) => {
+                        let writable = matches!(
+                            &*pat_ty.ty,
+                            syn::Type::Reference(r) if r.mutability.is_some()
+                        );
+                        env.push_in(
+                            name,
+                            Slot::Ptr(expr),
+                            base,
+                            writable,
+                            AddressSpace::Function,
+                        );
+                    }
+                    None => env.push(name, Slot::Value(expr), ty),
+                }
             }
         }
     }

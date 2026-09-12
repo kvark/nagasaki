@@ -66,7 +66,7 @@ pub enum Error {
     UnexpectedWorkgroupSize,
     #[error("entry point `{0}` is missing #[output(...)]")]
     MissingReturnBinding(String),
-    #[error("`{0}` writes rather than produces a value, so it cannot be used as one")]
+    #[error("`{0}` produces no value, so it cannot be used as one")]
     ValueFromStatement(String),
     #[error("unexpected address space on `{0}`: a texture or sampler is a handle")]
     UnexpectedAddressSpace(String),
@@ -94,7 +94,7 @@ pub enum Error {
     RuntimeArrayNotStorage(String),
     #[error("duplicate global `{0}`")]
     DuplicateGlobal(String),
-    #[error("cannot assign to read-only global `{0}`")]
+    #[error("cannot write through `{0}`, which is read-only")]
     AssignToReadonly(String),
     #[error("duplicate const `{0}`")]
     DuplicateConst(String),

@@ -93,7 +93,7 @@ fn discard_in_a_fragment_shader() {
 #[test]
 fn rejects_discard_as_a_value() {
     let msg = reject("fn f() -> f32 { discard() }");
-    assert!(msg.contains("writes"), "{msg}");
+    assert!(msg.contains("no value"), "{msg}");
 }
 
 #[test]

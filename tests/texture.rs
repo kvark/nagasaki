@@ -129,7 +129,7 @@ fn rejects_texture_store_as_a_value() {
         fn f(c: vec4) -> vec4 { textureStore(output, vec2(0, 0), c) }
         "#,
     );
-    assert!(msg.contains("writes"), "{msg}");
+    assert!(msg.contains("no value"), "{msg}");
 }
 
 #[test]

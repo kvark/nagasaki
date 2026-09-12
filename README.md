@@ -26,7 +26,9 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - entry points: `#[vertex]` / `#[fragment]` / `#[compute]` + `#[workgroup_size(x,y,z)]`
 - bindings: `#[location(N)]`, `#[builtin(name)]` on args; `#[output(builtin(..))]` / `#[output(location(N))]` on the fn
 - `select(reject, accept, condition)`, in WGSL's argument order
-- calls to earlier free functions
+- calls to earlier free functions, including ones that return nothing
+- out-parameters: `&mut T` is WGSL's `ptr<function, T>`; `&T` is the same pointer
+  with writes refused
 - `const NAME: T = …` at module level (literals and vector/matrix constructors)
 - math builtins: `dot`, `cross`, `normalize`, `length`, `abs`, `min`, `max`, `clamp`,
   `mix`, `step`, `sin`, `cos`, `pow`, `transpose`, `determinant`, the bit-twiddling
@@ -51,9 +53,8 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
   fragment inputs, and multiple render targets
 
 Not yet: labeled loops, `break` values, `switch`, forward calls, methods, generics,
-pointer parameters (`ptr<function, T>` out-params), ray queries, `void` functions,
-`const` arithmetic (Naga wants constants already folded). Swizzles are values, so
-`v.xy = a` is rejected — as it is in WGSL.
+ray queries, cooperative matrices, `const` arithmetic (Naga wants constants already
+folded). Swizzles are values, so `v.xy = a` is rejected — as it is in WGSL.
 Assignment to function arguments is rejected. Vector compare yields a `vecN<bool>`.
 
 ### Typing
@@ -130,10 +131,15 @@ for the host to fill in — which is how Blade supplies vertex attributes.
 
 ### Blade
 
-`tests/blade_shaders.rs` ports shaders from [Blade][blade] and checks them
-against the WGSL they came from: Naga parses the original, nagasaki parses the
-port, and the two modules must describe the same globals, entry points, struct
+`tests/blade_shaders.rs` ports shaders from [Blade][blade] — bunnymark, egui,
+skin, debug-blit, colour and quaternion helpers, the random-number generator,
+and particle and post-process compute passes. Five of them are checked against
+the WGSL they came from: Naga parses the original, nagasaki parses the port, and
+the two modules must describe the same globals, functions, entry points, struct
 layouts and bindings.
+
+Rust keywords are the one thing that forces a rename: Blade's `fn fs_main(in: VertexOutput)`
+has to call its argument something else.
 
 ## Example
 

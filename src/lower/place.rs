@@ -22,8 +22,10 @@ use crate::Error;
 pub(super) struct Place {
     pub pointer: Handle<Expression>,
     pub ty: Handle<Type>,
-    /// False for a global in a read-only address space.
+    /// False for a global in a read-only address space, or a `&T` parameter.
     pub writable: bool,
+    /// Where the storage lives, which a pointer to it has to agree with.
+    pub space: naga::AddressSpace,
     /// The binding the chain started from, for error messages.
     pub root: String,
 }
@@ -54,6 +56,7 @@ pub(super) fn lower_place(
                     pointer,
                     ty: binding.ty,
                     writable: binding.writable,
+                    space: binding.space,
                     root: name,
                 })),
             }
