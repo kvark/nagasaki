@@ -19,6 +19,7 @@ mod matrix;
 mod place;
 mod stmt;
 mod structure;
+mod texture;
 mod vector;
 
 use emit::item_kind;
@@ -100,6 +101,14 @@ impl Context {
             }
         }
         Ok(())
+    }
+
+    /// Intern a type that has no component structure of its own: an image or
+    /// a sampler.
+    pub(super) fn intern_handle_type(&mut self, inner: TypeInner) -> Handle<Type> {
+        self.module
+            .types
+            .insert(Type { name: None, inner }, Span::UNDEFINED)
     }
 
     pub(super) fn intern_scalar(&mut self, scalar: Scalar) -> Handle<Type> {
@@ -210,6 +219,14 @@ impl Context {
         }
         let seg = &path.path.segments[0];
         let name = seg.ident.to_string();
+
+        // Textures and samplers take their own argument shapes —
+        // `texture_storage_2d<Format, Access>` has two — so they are resolved
+        // before the one-argument rule below.
+        if let Some(result) = texture::parse_handle_type(self, &name, &collect_type_args(seg)?) {
+            return result;
+        }
+
         let type_arg = match &seg.arguments {
             syn::PathArguments::None => None,
             syn::PathArguments::AngleBracketed(args) if args.args.len() == 1 => {
@@ -469,6 +486,20 @@ pub(super) fn parse_mat_ident(name: &str) -> Option<(VectorSize, VectorSize, Opt
             }
         }
     }
+}
+
+/// Every angle-bracketed type argument of `seg`, in order.
+fn collect_type_args(seg: &syn::PathSegment) -> Result<Vec<&syn::Type>, Error> {
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return Ok(Vec::new());
+    };
+    args.args
+        .iter()
+        .map(|arg| match arg {
+            syn::GenericArgument::Type(ty) => Ok(ty),
+            _ => Err(Error::UnsupportedType(seg.ident.to_string())),
+        })
+        .collect()
 }
 
 fn lower_scalar_ident(ty: &syn::Type) -> Result<Scalar, Error> {

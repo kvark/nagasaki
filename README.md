@@ -33,11 +33,16 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - address spaces: uniform (default / `#[uniform]`), `#[storage]` (read), `#[storage(read_write)]`
 - structs: `struct S { a: vec3, b: f32 }`, literals `S { a, b: x }`, field access `s.a`
 - arrays: `[T; N]` and literals `[a, b, c]`; `[T]` for a runtime-sized storage buffer
+- textures and samplers: `texture_2d<f32>`, `texture_storage_2d<Rgba8Unorm, Write>`,
+  `texture_depth_2d`, `sampler`, `sampler_comparison`, arrayed and multisampled variants
+- texture builtins: `textureSample`, `textureSampleLevel`, `textureSampleCompare`,
+  `textureLoad`, `textureStore`, `textureDimensions`, `textureNumLevels`, … — each also
+  spelled snake_case (`texture_load`)
 - I/O structs: `#[location]` / `#[builtin]` on struct fields, for vertex outputs,
   fragment inputs, and multiple render targets
 
 Not yet: labeled loops, `break` values, forward calls, methods, generics,
-textures and samplers, `void` functions, `array_length`, `const` arithmetic (Naga
+atomics, ray queries, `void` functions, `array_length`, `const` arithmetic (Naga
 wants constants already folded). Swizzles are values, so `v.xy = a` is rejected —
 as it is in WGSL.
 Assignment to function arguments is rejected. Vector compare yields a `vecN<bool>`.

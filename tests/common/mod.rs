@@ -6,12 +6,19 @@
 
 #![allow(dead_code)]
 
-use nagasaki::{parse_str, to_wgsl, validate};
+use nagasaki::{parse_str, to_wgsl, validate, validate_unbound};
 
 /// Lower, validate, and emit WGSL. Panics with the reason on any failure.
 pub fn roundtrip(src: &str) -> String {
     let module = parse_str(src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"));
     let info = validate(&module).unwrap_or_else(|e| panic!("validate: {e}\n{src}"));
+    to_wgsl(&module, &info).unwrap_or_else(|e| panic!("wgsl: {e}\n{src}"))
+}
+
+/// Like `roundtrip`, for a module whose `@group`/`@binding` the host assigns.
+pub fn roundtrip_unbound(src: &str) -> String {
+    let module = parse_str(src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"));
+    let info = validate_unbound(&module).unwrap_or_else(|e| panic!("validate: {e}\n{src}"));
     to_wgsl(&module, &info).unwrap_or_else(|e| panic!("wgsl: {e}\n{src}"))
 }
 

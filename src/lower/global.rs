@@ -29,10 +29,18 @@ struct ResourceInfo {
 
 pub(super) fn bind_globals(ctx: &Context, function: &mut Function, env: &mut Env) {
     for g in &ctx.globals {
-        let pointer = function
+        let expr = function
             .expressions
             .append(Expression::GlobalVariable(g.handle), Span::UNDEFINED);
-        env.push_rw(g.name.clone(), Slot::Ptr(pointer), g.ty, g.writable);
+        // A handle names the resource itself; there is nothing to load from it,
+        // and Naga wants the `GlobalVariable` expression passed straight to the
+        // image builtins.
+        let slot = if super::texture::is_handle(ctx, g.ty) {
+            Slot::Value(expr)
+        } else {
+            Slot::Ptr(expr)
+        };
+        env.push_rw(g.name.clone(), slot, g.ty, g.writable);
     }
 }
 
@@ -78,6 +86,15 @@ fn insert_global(
         return Err(Error::DuplicateGlobal(name));
     }
 
+    // A texture or sampler is a handle, not a buffer: it has no address space
+    // to choose and is never written through an assignment.
+    if super::texture::is_handle(ctx, ty) {
+        if info.space.is_some() {
+            return Err(Error::UnexpectedAddressSpace(name));
+        }
+        return finish_global(ctx, name, ty, AddressSpace::Handle, false, binding);
+    }
+
     let (space, writable) = match info.space.unwrap_or(SpaceKind::Uniform) {
         SpaceKind::Uniform => (AddressSpace::Uniform, false),
         SpaceKind::Storage { write } => {
@@ -96,6 +113,17 @@ fn insert_global(
         return Err(Error::RuntimeArrayNotStorage(name));
     }
 
+    finish_global(ctx, name, ty, space, writable, binding)
+}
+
+fn finish_global(
+    ctx: &mut Context,
+    name: String,
+    ty: Handle<Type>,
+    space: AddressSpace,
+    writable: bool,
+    binding: Option<ResourceBinding>,
+) -> Result<(), Error> {
     let handle = ctx.module.global_variables.append(
         GlobalVariable {
             name: Some(name.clone()),
