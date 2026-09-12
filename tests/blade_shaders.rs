@@ -736,3 +736,99 @@ fn random_state() {
     assert!(wgsl.contains("ptr<function, RandomState>"), "{wgsl}");
     assert!(wgsl.contains("random_gen"), "{wgsl}");
 }
+
+/// `blade-render/code/a-trous.wgsl`'s edge-avoiding filter, with the pieces its
+/// `#include`s supply written inline. The densest compute shader in Blade that
+/// does not trace rays: nested `for`s with `continue`, a const vector indexed by
+/// a loop counter, storage-texture load and store.
+#[test]
+fn a_trous_filter() {
+    let wgsl = roundtrip_unbound(
+        r#"
+        struct Surface {
+            flat_normal: vec3,
+            depth: f32,
+        }
+
+        struct Params {
+            extent: vec2<i32>,
+            temporal_weight: f32,
+            iteration: u32,
+            use_motion_vectors: u32,
+        }
+
+        static params: Params = ();
+        static t_depth: texture_2d<f32> = ();
+        static t_flat_normal: texture_2d<f32> = ();
+        static input: texture_2d<f32> = ();
+        static output: texture_storage_2d<Rgba16Float, ReadWrite> = ();
+
+        const LUMA: vec3 = vec3(0.2126, 0.7152, 0.0722);
+        const GAUSSIAN_WEIGHTS: vec2 = vec2(0.44198, 0.27901);
+        const SIGMA_L: f32 = 4.0;
+        const SIGMA_N: f32 = 4.0;
+        const EPSILON: f32 = 0.001;
+
+        fn compare_flat_normals(a: vec3, b: vec3) -> f32 {
+            pow(max(0.0, dot(a, b)), SIGMA_N)
+        }
+
+        fn compare_depths(a: f32, b: f32) -> f32 {
+            1.0 - smoothstep(0.0, 100.0, abs(a - b))
+        }
+
+        fn compare_luminance(a_lum: f32, b_lum: f32, variance: f32) -> f32 {
+            exp(-abs(a_lum - b_lum) / (SIGMA_L * variance + EPSILON))
+        }
+
+        fn w4(w: f32) -> vec4 {
+            vec4(vec3(w), w * w)
+        }
+
+        fn read_surface(pixel: vec2<i32>) -> Surface {
+            let surface = Surface();
+            surface.flat_normal = normalize(textureLoad(t_flat_normal, pixel, 0).xyz);
+            surface.depth = textureLoad(t_depth, pixel, 0).x;
+            surface
+        }
+
+        #[compute]
+        #[workgroup_size(8, 8)]
+        fn atrous3x3(#[builtin(global_invocation_id)] global_id: vec3<u32>) {
+            let center = global_id.xy as vec2<i32>;
+            if any(center >= params.extent) {
+                return;
+            }
+
+            let center_ilm = textureLoad(input, center, 0);
+            let center_luma = dot(center_ilm.xyz, LUMA);
+            let center_suf = read_surface(center);
+            let filtered_ilm = center_ilm;
+
+            for yy in -1..=1 {
+                for xx in -1..=1 {
+                    let p = center + vec2(xx, yy) * (1 << params.iteration);
+                    if all(p == center) || any(p < vec2(0, 0)) || any(p >= params.extent) {
+                        continue;
+                    }
+
+                    let surface = read_surface(p);
+                    let weight = GAUSSIAN_WEIGHTS[abs(xx)] * GAUSSIAN_WEIGHTS[abs(yy)];
+                    weight *= compare_flat_normals(surface.flat_normal, center_suf.flat_normal);
+                    weight *= compare_depths(surface.depth, center_suf.depth);
+                    let other_ilm = textureLoad(input, p, 0);
+                    let variance = sqrt(max(center_ilm.w, other_ilm.w));
+                    weight *= compare_luminance(center_luma, dot(other_ilm.xyz, LUMA), variance);
+
+                    filtered_ilm += w4(weight) * (other_ilm - center_ilm);
+                }
+            }
+
+            textureStore(output, global_id.xy as vec2<i32>, filtered_ilm);
+        }
+        "#,
+    );
+    assert!(wgsl.contains("fn atrous3x3"), "{wgsl}");
+    assert!(wgsl.contains("textureStore(output,"), "{wgsl}");
+    assert!(wgsl.contains("const GAUSSIAN_WEIGHTS"), "{wgsl}");
+}
