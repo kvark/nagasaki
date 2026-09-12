@@ -1,6 +1,5 @@
 use naga::{
-    proc::Layouter, Binding, Block, Expression, Function, Handle, Interpolation, Sampling,
-    ScalarKind, Span, StructMember, Type, TypeInner,
+    proc::Layouter, Block, Expression, Function, Handle, Span, StructMember, Type, TypeInner,
 };
 use syn::{Fields, ItemStruct};
 
@@ -45,7 +44,7 @@ pub(super) fn lower_struct_item(ctx: &mut Context, item: ItemStruct) -> Result<(
         let ty = ctx.lower_type(&field.ty)?;
         let mut binding = super::entry::parse_io_binding(&field.attrs)?;
         if let Some(binding) = binding.as_mut() {
-            apply_default_interpolation(ctx, ty, binding);
+            super::entry::apply_default_interpolation(ctx, ty, binding);
         }
         member_names.push(fname);
         member_tys.push(ty);
@@ -95,28 +94,6 @@ pub(super) fn lower_struct_item(ctx: &mut Context, item: ItemStruct) -> Result<(
     );
     ctx.structs.push((name, handle));
     Ok(())
-}
-
-/// Float varyings default to perspective-correct, center-sampled interpolation,
-/// the way every shading language spells it. Integers get nothing: they cannot
-/// be interpolated, so `#[flat]` has to be explicit (and `check_io_struct` says
-/// so when it matters).
-///
-/// Perspective + Center is also what the WGSL backend treats as the default, so
-/// it prints no `@interpolate` and the struct stays usable as a vertex input.
-fn apply_default_interpolation(ctx: &Context, ty: Handle<Type>, binding: &mut Binding) {
-    let Binding::Location {
-        interpolation: interpolation @ None,
-        sampling,
-        ..
-    } = binding
-    else {
-        return;
-    };
-    if ctx.shape(ty).scalar().map(|s| s.kind) == Some(ScalarKind::Float) {
-        *interpolation = Some(Interpolation::Perspective);
-        *sampling = Some(Sampling::Center);
-    }
 }
 
 pub(super) fn lower_struct_lit(

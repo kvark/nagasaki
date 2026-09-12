@@ -1,6 +1,6 @@
 use naga::{
-    Binding, BuiltIn, EntryPoint, Function, FunctionResult, Interpolation, ScalarKind, ShaderStage,
-    TypeInner,
+    Binding, BuiltIn, EntryPoint, Function, FunctionResult, Handle, Interpolation, Sampling,
+    ScalarKind, ShaderStage, Type,
 };
 use syn::{Attribute, FnArg, ItemFn, LitInt, Meta, ReturnType};
 
@@ -172,33 +172,48 @@ fn needs_interpolation(stage: ShaderStage, is_input: bool) -> bool {
     )
 }
 
-fn fill_interpolation(
-    ctx: &Context,
-    ty: naga::Handle<naga::Type>,
+/// Give a float `Location` binding the default every shading language shares:
+/// perspective-correct, center-sampled.
+///
+/// Applied to every location binding, not just the interpolated ones, because
+/// that is what Naga's own WGSL frontend does — and because the backend prints
+/// nothing for the default, so it stays invisible where it does not apply.
+/// Integers cannot be interpolated at all, so they are left alone and
+/// `check_interpolation` asks for `#[flat]` where one is required.
+pub(super) fn apply_default_interpolation(ctx: &Context, ty: Handle<Type>, binding: &mut Binding) {
+    let Binding::Location {
+        interpolation: interpolation @ None,
+        sampling,
+        ..
+    } = binding
+    else {
+        return;
+    };
+    if ctx.shape(ty).scalar().map(|s| s.kind) == Some(ScalarKind::Float) {
+        *interpolation = Some(Interpolation::Perspective);
+        *sampling = Some(Sampling::Center);
+    }
+}
+
+/// An integer varying has to say `#[flat]`; nothing else can be meant, but WGSL
+/// still wants it written down.
+fn check_interpolation(
+    binding: &Binding,
+    name: &str,
     stage: ShaderStage,
     is_input: bool,
-    binding: &mut Binding,
-) {
-    let Binding::Location { interpolation, .. } = binding else {
-        return;
-    };
-    if !needs_interpolation(stage, is_input) || interpolation.is_some() {
-        return;
+) -> Result<(), Error> {
+    if !needs_interpolation(stage, is_input) {
+        return Ok(());
     }
-    let integer = match ctx.module.types[ty].inner {
-        TypeInner::Scalar(s) | TypeInner::Vector { scalar: s, .. } => {
-            matches!(
-                s.kind,
-                ScalarKind::Sint | ScalarKind::Uint | ScalarKind::Bool
-            )
-        }
-        _ => false,
-    };
-    *interpolation = Some(if integer {
-        Interpolation::Flat
-    } else {
-        Interpolation::Perspective
-    });
+    if let Binding::Location {
+        interpolation: None,
+        ..
+    } = binding
+    {
+        return Err(Error::MissingFlat(name.into()));
+    }
+    Ok(())
 }
 
 /// Does this type carry its own per-field bindings, as a vertex-output or
@@ -214,20 +229,14 @@ fn is_io_struct(ctx: &Context, ty: naga::Handle<naga::Type>) -> bool {
 /// integers cannot be interpolated at all, so they have to say `#[flat]`.
 fn check_io_struct(
     ctx: &Context,
-    ty: naga::Handle<naga::Type>,
+    ty: Handle<Type>,
     stage: ShaderStage,
     is_input: bool,
 ) -> Result<(), Error> {
-    if !needs_interpolation(stage, is_input) {
-        return Ok(());
-    }
     for member in ctx.as_struct(ty).into_iter().flatten() {
-        if let Some(Binding::Location {
-            interpolation: None,
-            ..
-        }) = member.binding
-        {
-            return Err(Error::MissingFlat(member.name.clone().unwrap_or_default()));
+        if let Some(binding) = &member.binding {
+            let name = member.name.clone().unwrap_or_default();
+            check_interpolation(binding, &name, stage, is_input)?;
         }
     }
     Ok(())
@@ -277,7 +286,8 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
                 let mut binding = info
                     .return_binding
                     .ok_or_else(|| Error::MissingReturnBinding(name.clone()))?;
-                fill_interpolation(ctx, result_ty, stage, false, &mut binding);
+                apply_default_interpolation(ctx, result_ty, &mut binding);
+                check_interpolation(&binding, &name, stage, false)?;
                 Some(FunctionResult {
                     ty: result_ty,
                     binding: Some(binding),
@@ -303,11 +313,20 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
         };
         match parse_io_binding(&pat_ty.attrs)? {
             Some(mut binding) => {
-                fill_interpolation(ctx, arg.ty, stage, true, &mut binding);
+                apply_default_interpolation(ctx, arg.ty, &mut binding);
+                let name = arg.name.clone().unwrap_or_default();
+                check_interpolation(&binding, &name, stage, true)?;
                 arg.binding = Some(binding);
             }
-            // A struct that carries bindings on its fields needs none here.
-            None if is_io_struct(ctx, arg.ty) => check_io_struct(ctx, arg.ty, stage, true)?,
+            // A struct argument carries its interface on its fields — either
+            // written there, or left for the host to fill in (Blade matches
+            // vertex attributes up by field name). Half-bound structs are
+            // already refused where they are declared.
+            None if ctx.as_struct(arg.ty).is_some() => {
+                if is_io_struct(ctx, arg.ty) {
+                    check_io_struct(ctx, arg.ty, stage, true)?;
+                }
+            }
             None => {
                 return Err(Error::MissingArgBinding(
                     arg.name.clone().unwrap_or_default(),
