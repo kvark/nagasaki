@@ -13,7 +13,8 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - matrices: `mat2`/`mat3`/`mat4` (square `f32`), `matCxR`, `mat4f`, `mat2x3<f32>`
 - constructors: `vec3(x, y, z)`, splat `vec3(x)`, mix `vec3(xy, z)`
 - matrix constructors: column vectors `mat4(c0,c1,c2,c3)` or column-major scalars
-- components: `.x`/`.y`/`.z`/`.w`, swizzle `.xy`/`.zyx`, index `v[0]` / `v[i]` / `m[0]`
+- components: `.x`/`.y`/`.z`/`.w` or `.r`/`.g`/`.b`/`.a`, swizzle `.xy`/`.zyx`,
+  index `v[0]` / `v[i]` / `m[0]`
 - literals, unary `-`/`!`, arithmetic / compare / bitwise / shift ops (scalar splat on mix)
 - casts: `a as f32`, `v as vec3<u32>` (same width, component-wise)
 - `let` / `let x: T = …`, and `let x: T;` assigned later (WGSL's bare `var x: T;`)
@@ -27,10 +28,18 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - `select(reject, accept, condition)`, in WGSL's argument order
 - calls to earlier free functions
 - `const NAME: T = …` at module level (literals and vector/matrix constructors)
-- math builtins: `dot`, `cross`, `normalize`, `length`, `distance`, `abs`, `min`, `max`, `clamp`, `mix`, `sin`, `cos`, `transpose`, `determinant`, …
+- math builtins: `dot`, `cross`, `normalize`, `length`, `abs`, `min`, `max`, `clamp`,
+  `mix`, `step`, `sin`, `cos`, `pow`, `transpose`, `determinant`, the bit-twiddling
+  set (`countOneBits`, `reverseBits`, `extractBits`, …) and the packing set
+  (`pack4x8snorm`, `unpack4x8unorm`, …) — each also spelled snake_case
+- `all`, `any`, `isNan`, `isInf`; `arrayLength(buf)`; `discard()`;
+  `workgroupBarrier()` / `storageBarrier()`
 - globals: `#[group(N)] #[binding(M)] static x: T = ();` (init ignored) or `extern { static x: T; }`;
   both attributes may be dropped for a host that assigns bindings itself — see [`validate_unbound`](#host-assigned-bindings)
-- address spaces: uniform (default / `#[uniform]`), `#[storage]` (read), `#[storage(read_write)]`
+- address spaces: uniform (default / `#[uniform]`), `#[storage]` (read),
+  `#[storage(read_write)]`, `#[workgroup]`, `#[private]`
+- atomics: `atomic<u32>` / `atomic<i32>`, `atomicAdd` / `atomicStore` / `atomicLoad` /
+  `atomicMax` / … taking the variable directly rather than a reference
 - structs: `struct S { a: vec3, b: f32 }`, literals `S { a, b: x }`, field access `s.a`
 - arrays: `[T; N]` and literals `[a, b, c]`; `[T]` for a runtime-sized storage buffer
 - textures and samplers: `texture_2d<f32>`, `texture_storage_2d<Rgba8Unorm, Write>`,
@@ -41,10 +50,10 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - I/O structs: `#[location]` / `#[builtin]` on struct fields, for vertex outputs,
   fragment inputs, and multiple render targets
 
-Not yet: labeled loops, `break` values, forward calls, methods, generics,
-atomics, ray queries, `void` functions, `array_length`, `const` arithmetic (Naga
-wants constants already folded). Swizzles are values, so `v.xy = a` is rejected —
-as it is in WGSL.
+Not yet: labeled loops, `break` values, `switch`, forward calls, methods, generics,
+pointer parameters (`ptr<function, T>` out-params), ray queries, `void` functions,
+`const` arithmetic (Naga wants constants already folded). Swizzles are values, so
+`v.xy = a` is rejected — as it is in WGSL.
 Assignment to function arguments is rejected. Vector compare yields a `vecN<bool>`.
 
 ### Typing

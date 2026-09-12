@@ -238,6 +238,14 @@ impl Context {
             _ => return Err(Error::UnsupportedType(name)),
         };
 
+        if name == "atomic" {
+            let scalar = match type_arg {
+                Some(inner) => lower_scalar_ident(inner)?,
+                None => return Err(Error::UnsupportedType("atomic".into())),
+            };
+            return Ok(self.intern_handle_type(TypeInner::Atomic(scalar)));
+        }
+
         if let Some((size, shorthand)) = parse_vec_ident(&name) {
             let scalar = match (shorthand, type_arg) {
                 (Some(scalar), None) => scalar,

@@ -5,7 +5,7 @@ use super::emit::emit;
 use super::env::Env;
 use super::expr::{lower_expr, lower_expr_hinted};
 use super::parse_vec_ident;
-use super::place::{element, index_expr, vector_component, IndexKind};
+use super::place::{element, index_expr, swizzle_components, IndexKind};
 use super::{Context, Shape, Typed};
 use crate::Error;
 
@@ -161,11 +161,8 @@ pub(super) fn lower_field(
     let (vec_size, scalar) = ctx
         .as_vector(base_ty)
         .ok_or_else(|| Error::UnsupportedExpr("field".into()))?;
-    let letters: Vec<u32> = member
-        .chars()
-        .map(|c| vector_component(&c.to_string()))
-        .collect::<Option<_>>()
-        .ok_or_else(|| Error::UnsupportedSwizzle(member.clone()))?;
+    let letters =
+        swizzle_components(&member).ok_or_else(|| Error::UnsupportedSwizzle(member.clone()))?;
     if letters.is_empty() || letters.len() > 4 || letters.iter().any(|&i| i >= vec_size as u32) {
         return Err(Error::UnsupportedSwizzle(member));
     }
