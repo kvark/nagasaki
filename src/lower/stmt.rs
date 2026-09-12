@@ -114,15 +114,8 @@ fn lower_stmt_expr(
         Expr::Loop(loop_expr) => lower_loop(ctx, function, body, loop_expr, env),
         Expr::Break(brk) => lower_break(body, brk),
         Expr::ForLoop(for_expr) => lower_for(ctx, function, body, for_expr, env),
-        // `textureStore` writes rather than produces, so it only makes sense here.
-        Expr::Call(call) => {
-            if let Some((name, op)) = super::call::statement_builtin(call) {
-                super::texture::lower_texture_call(ctx, function, body, call, env, &name, op)?;
-                return Ok(());
-            }
-            let _ = lower_expr(ctx, function, body, expr, env)?;
-            Ok(())
-        }
+        // Some builtins write rather than produce, so they only make sense here.
+        Expr::Call(call) => super::call::lower_call_stmt(ctx, function, body, call, env),
         Expr::Continue(cont) => lower_continue(body, cont),
         Expr::Block(b) => {
             env.push_scope();

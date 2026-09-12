@@ -142,14 +142,39 @@ pub(super) fn component(
     Some((index, ctx.intern_scalar(scalar)))
 }
 
+/// WGSL names vector components twice over: `xyzw` and `rgba`. Both are here,
+/// though WGSL does not let a single swizzle mix the two sets.
 pub(super) fn vector_component(name: &str) -> Option<u32> {
     match name {
-        "x" => Some(0),
-        "y" => Some(1),
-        "z" => Some(2),
-        "w" => Some(3),
+        "x" | "r" => Some(0),
+        "y" | "g" => Some(1),
+        "z" | "b" => Some(2),
+        "w" | "a" => Some(3),
         _ => None,
     }
+}
+
+/// Which of the two naming sets a component letter belongs to, so a swizzle
+/// can be held to one of them.
+fn component_set(letter: char) -> Option<bool> {
+    match letter {
+        'x' | 'y' | 'z' | 'w' => Some(false),
+        'r' | 'g' | 'b' | 'a' => Some(true),
+        _ => None,
+    }
+}
+
+/// Component indices for a swizzle, rejecting a mix of `xyzw` and `rgba`.
+pub(super) fn swizzle_components(member: &str) -> Option<Vec<u32>> {
+    let mut sets = member.chars().map(component_set);
+    let first = sets.next()??;
+    if !sets.all(|set| set == Some(first)) {
+        return None;
+    }
+    member
+        .chars()
+        .map(|c| vector_component(&c.to_string()))
+        .collect()
 }
 
 /// The bound and element type of an indexable `ty`. A runtime-sized array has

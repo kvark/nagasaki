@@ -70,6 +70,12 @@ pub enum Error {
     ValueFromStatement(String),
     #[error("unexpected address space on `{0}`: a texture or sampler is a handle")]
     UnexpectedAddressSpace(String),
+    #[error("`{0}` needs something that names storage as its first argument")]
+    NotAPlace(String),
+    #[error("`{0}` needs an `atomic<T>` as its first argument")]
+    NotAnAtomic(String),
+    #[error("`{0}` is workgroup or private memory, so it takes no binding")]
+    UnexpectedBinding(String),
     #[error("`{0}` needs a texture as its first argument")]
     NotATexture(String),
     #[error("unknown function `{0}`")]

@@ -18,7 +18,13 @@ pub(crate) struct GlobalInfo {
 #[derive(Clone, Copy)]
 enum SpaceKind {
     Uniform,
-    Storage { write: bool },
+    Storage {
+        write: bool,
+    },
+    /// Shared across a workgroup, zero-initialised each dispatch.
+    Workgroup,
+    /// Private to each invocation.
+    Private,
 }
 
 struct ResourceInfo {
@@ -105,6 +111,17 @@ fn insert_global(
             };
             (AddressSpace::Storage { access }, write)
         }
+        SpaceKind::Workgroup => (AddressSpace::WorkGroup, true),
+        SpaceKind::Private => (AddressSpace::Private, true),
+    };
+
+    // Only resources are bound; workgroup and private memory belongs to the
+    // shader itself.
+    let binding = match (space, binding) {
+        (AddressSpace::WorkGroup | AddressSpace::Private, Some(_)) => {
+            return Err(Error::UnexpectedBinding(name))
+        }
+        (_, binding) => binding,
     };
 
     // WGSL puts runtime-sized arrays in storage only. Naga notices too, but as
@@ -177,6 +194,10 @@ fn parse_resource_attrs(attrs: &[Attribute]) -> Result<ResourceInfo, Error> {
         } else if attr.path().is_ident("storage") {
             let write = parse_storage_write(attr)?;
             set_space(&mut info.space, SpaceKind::Storage { write })?;
+        } else if attr.path().is_ident("workgroup") {
+            set_space(&mut info.space, SpaceKind::Workgroup)?;
+        } else if attr.path().is_ident("private") {
+            set_space(&mut info.space, SpaceKind::Private)?;
         }
     }
     Ok(info)
