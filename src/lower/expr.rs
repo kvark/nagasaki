@@ -1,6 +1,6 @@
 use naga::{
-    BinaryOperator, Block, Expression, Function, Handle, Literal, Scalar, Span, Statement, Type,
-    TypeInner, UnaryOperator,
+    BinaryOperator, Block, Expression, Function, Handle, Literal, Scalar, ScalarKind, Span,
+    Statement, Type, UnaryOperator,
 };
 use syn::{BinOp, Expr};
 
@@ -8,8 +8,8 @@ use super::call::lower_call;
 use super::emit::{emit, expr_kind};
 use super::env::{Env, Slot};
 use super::stmt::{lower_block, lower_if_expr};
-use super::vector::{lower_field, lower_index, splat_mix};
-use super::Context;
+use super::vector::{lower_field, lower_index, splat_mix, splat_shift};
+use super::{Context, Shape, Typed};
 use crate::Error;
 
 pub(super) fn lower_expr(
@@ -18,10 +18,26 @@ pub(super) fn lower_expr(
     body: &mut Block,
     expr: &Expr,
     env: &mut Env,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+) -> Result<Typed, Error> {
+    lower_expr_hinted(ctx, function, body, expr, env, None)
+}
+
+/// Lower `expr`, letting untyped integer literals take the scalar type `hint`.
+///
+/// Rust infers `1` from its context (`x << 1`, `f(1)`, `let n: u32 = 1`); this
+/// is how far that inference goes here. `hint` is only ever an integer scalar,
+/// so a float context leaves `1` alone, exactly as Rust would.
+pub(super) fn lower_expr_hinted(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    expr: &Expr,
+    env: &mut Env,
+    hint: Option<Scalar>,
+) -> Result<Typed, Error> {
     match expr {
-        Expr::Paren(inner) => lower_expr(ctx, function, body, &inner.expr, env),
-        Expr::Group(inner) => lower_expr(ctx, function, body, &inner.expr, env),
+        Expr::Paren(inner) => lower_expr_hinted(ctx, function, body, &inner.expr, env, hint),
+        Expr::Group(inner) => lower_expr_hinted(ctx, function, body, &inner.expr, env, hint),
         Expr::Path(path) => {
             let ident = path
                 .path
@@ -37,44 +53,17 @@ pub(super) fn lower_expr(
             };
             Ok((expr, ty))
         }
-        Expr::Lit(lit) => lower_lit(ctx, function, lit),
+        Expr::Lit(lit) => lower_lit(ctx, function, lit, hint),
         Expr::Binary(bin) => {
             if let Some(op) = map_compound_op(&bin.op) {
-                return lower_assign(ctx, function, body, &bin.left, &bin.right, Some(op), env);
+                return lower_compound_assign(ctx, function, body, &bin.left, &bin.right, op, env);
             }
-            let (mut left, mut left_ty) = lower_expr(ctx, function, body, &bin.left, env)?;
-            let (mut right, mut right_ty) = lower_expr(ctx, function, body, &bin.right, env)?;
             let op = map_bin_op(&bin.op)?;
-            splat_mix(ctx, function, body, &mut left, &mut left_ty, &mut right, &mut right_ty)?;
-            let ty = bin_result_ty(ctx, op, left_ty, right_ty)?;
-            let handle = emit(function, body, Expression::Binary { op, left, right })?;
-            Ok((handle, ty))
+            lower_binary(ctx, function, body, op, &bin.left, &bin.right, env)
         }
-        Expr::Unary(unary) => {
-            let (inner, inner_ty) = lower_expr(ctx, function, body, &unary.expr, env)?;
-            let (op, ty) = match unary.op {
-                syn::UnOp::Neg(_) => (UnaryOperator::Negate, inner_ty),
-                syn::UnOp::Not(_) => {
-                    let is_bool = matches!(
-                        ctx.as_scalar(inner_ty),
-                        Some(s) if s == Scalar::BOOL
-                    ) || matches!(
-                        ctx.as_vector(inner_ty),
-                        Some((_, s)) if s == Scalar::BOOL
-                    );
-                    if !is_bool {
-                        return Err(Error::TypeMismatch);
-                    }
-                    (UnaryOperator::LogicalNot, inner_ty)
-                }
-                _ => return Err(Error::UnsupportedExpr("unary".into())),
-            };
-            let handle = emit(function, body, Expression::Unary { op, expr: inner })?;
-            Ok((handle, ty))
-        }
-        Expr::Assign(assign) => {
-            lower_assign(ctx, function, body, &assign.left, &assign.right, None, env)
-        }
+        Expr::Unary(unary) => lower_unary(ctx, function, body, unary, env),
+        Expr::Cast(cast) => lower_cast(ctx, function, body, cast, env),
+        Expr::Assign(assign) => lower_assign(ctx, function, body, &assign.left, &assign.right, env),
         Expr::If(if_expr) => lower_if_expr(ctx, function, body, if_expr, env),
         Expr::Block(b) => {
             env.push_scope();
@@ -90,30 +79,96 @@ pub(super) fn lower_expr(
     }
 }
 
-fn lower_assign(
+fn lower_unary(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
-    left: &Expr,
-    right: &Expr,
-    compound: Option<BinaryOperator>,
+    unary: &syn::ExprUnary,
     env: &mut Env,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+) -> Result<Typed, Error> {
+    let (inner, ty) = lower_expr(ctx, function, body, &unary.expr, env)?;
+    let op = match unary.op {
+        // Naga has no negation for matrices or unsigned integers.
+        syn::UnOp::Neg(_) => match ctx.shape(ty).elem_kind() {
+            Some(ScalarKind::Float | ScalarKind::Sint) => UnaryOperator::Negate,
+            _ => return Err(Error::BadOperandTypes("-".into())),
+        },
+        // `!` is logical on `bool` and bitwise on integers, as in Rust.
+        syn::UnOp::Not(_) => match ctx.shape(ty).elem_kind() {
+            Some(ScalarKind::Bool) => UnaryOperator::LogicalNot,
+            Some(ScalarKind::Sint | ScalarKind::Uint) => UnaryOperator::BitwiseNot,
+            _ => return Err(Error::BadOperandTypes("!".into())),
+        },
+        _ => return Err(Error::UnsupportedExpr("unary".into())),
+    };
+    let handle = emit(function, body, Expression::Unary { op, expr: inner })?;
+    Ok((handle, ty))
+}
+
+fn lower_binary(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    op: BinaryOperator,
+    left_expr: &Expr,
+    right_expr: &Expr,
+    env: &mut Env,
+) -> Result<Typed, Error> {
+    let shift = is_shift(op);
+    // Lower the side that pins down the type first, so an untyped integer
+    // literal on the other side can follow it. Literals have no side effects,
+    // so swapping the order is not observable.
+    let (mut left, mut left_ty, mut right, mut right_ty) =
+        if !shift && is_untyped_int(left_expr) && !is_untyped_int(right_expr) {
+            let (right, right_ty) = lower_expr(ctx, function, body, right_expr, env)?;
+            let hint = ctx.shape(right_ty).int_hint();
+            let (left, left_ty) = lower_expr_hinted(ctx, function, body, left_expr, env, hint)?;
+            (left, left_ty, right, right_ty)
+        } else {
+            let (left, left_ty) = lower_expr(ctx, function, body, left_expr, env)?;
+            // Shift amounts are always `u32`, whatever the left operand is.
+            let hint = if shift {
+                Some(Scalar::U32)
+            } else {
+                ctx.shape(left_ty).int_hint()
+            };
+            let (right, right_ty) = lower_expr_hinted(ctx, function, body, right_expr, env, hint)?;
+            (left, left_ty, right, right_ty)
+        };
+
+    if shift {
+        splat_shift(ctx, function, body, left_ty, &mut right, &mut right_ty)?;
+    } else {
+        splat_mix(
+            ctx,
+            function,
+            body,
+            &mut left,
+            &mut left_ty,
+            &mut right,
+            &mut right_ty,
+        )?;
+    }
+    let ty = bin_result_ty(ctx, op, left_ty, right_ty)?;
+    let handle = emit(function, body, Expression::Binary { op, left, right })?;
+    Ok((handle, ty))
+}
+
+/// Resolve an assignment target to the pointer it stores through.
+fn assign_target(left: &Expr, env: &Env) -> Result<Typed, Error> {
     let name = match left {
         Expr::Path(path) => path
             .path
             .get_ident()
             .ok_or(Error::InvalidAssignTarget)?
             .to_string(),
-        Expr::Paren(inner) => {
-            return lower_assign(ctx, function, body, &inner.expr, right, compound, env);
-        }
+        Expr::Paren(inner) => return assign_target(&inner.expr, env),
+        Expr::Group(inner) => return assign_target(&inner.expr, env),
         _ => return Err(Error::InvalidAssignTarget),
     };
     let binding = env
         .lookup(&name)
         .ok_or_else(|| Error::UnknownIdent(name.clone()))?;
-    let ty = binding.ty;
     let pointer = match binding.slot {
         Slot::Ptr(pointer) => pointer,
         Slot::Value(_) => return Err(Error::AssignToArgument(name)),
@@ -121,33 +176,124 @@ fn lower_assign(
     if !binding.writable {
         return Err(Error::AssignToReadonly(name));
     }
-    let (rhs, rhs_ty) = lower_expr(ctx, function, body, right, env)?;
-    if rhs_ty != ty {
+    Ok((pointer, binding.ty))
+}
+
+fn lower_assign(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    left: &Expr,
+    right: &Expr,
+    env: &mut Env,
+) -> Result<Typed, Error> {
+    let (pointer, ty) = assign_target(left, env)?;
+    let hint = ctx.shape(ty).int_hint();
+    let (value, value_ty) = lower_expr_hinted(ctx, function, body, right, env, hint)?;
+    if value_ty != ty {
         return Err(Error::TypeMismatch);
     }
-    let value = if let Some(op) = compound {
-        let left_val = emit(function, body, Expression::Load { pointer })?;
-        emit(
-            function,
-            body,
-            Expression::Binary {
-                op,
-                left: left_val,
-                right: rhs,
-            },
-        )?
-    } else {
-        rhs
-    };
     body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
     Ok((value, ty))
+}
+
+/// `x += e` and friends: same operand rules as the matching binary operator,
+/// with the result required to fit back into `x`.
+fn lower_compound_assign(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    left: &Expr,
+    right: &Expr,
+    op: BinaryOperator,
+    env: &mut Env,
+) -> Result<Typed, Error> {
+    let (pointer, ty) = assign_target(left, env)?;
+    let shift = is_shift(op);
+    let hint = if shift {
+        Some(Scalar::U32)
+    } else {
+        ctx.shape(ty).int_hint()
+    };
+    // Rust evaluates the right operand first.
+    let (mut rhs, mut rhs_ty) = lower_expr_hinted(ctx, function, body, right, env, hint)?;
+    let mut lhs = emit(function, body, Expression::Load { pointer })?;
+    let mut lhs_ty = ty;
+    if shift {
+        splat_shift(ctx, function, body, lhs_ty, &mut rhs, &mut rhs_ty)?;
+    } else {
+        splat_mix(
+            ctx,
+            function,
+            body,
+            &mut lhs,
+            &mut lhs_ty,
+            &mut rhs,
+            &mut rhs_ty,
+        )?;
+    }
+    if bin_result_ty(ctx, op, lhs_ty, rhs_ty)? != ty {
+        return Err(Error::TypeMismatch);
+    }
+    let value = emit(
+        function,
+        body,
+        Expression::Binary {
+            op,
+            left: lhs,
+            right: rhs,
+        },
+    )?;
+    body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
+    Ok((value, ty))
+}
+
+fn lower_cast(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    cast: &syn::ExprCast,
+    env: &mut Env,
+) -> Result<Typed, Error> {
+    let target = ctx.lower_type(&cast.ty)?;
+    let (value, value_ty) = lower_expr(ctx, function, body, &cast.expr, env)?;
+    if value_ty == target {
+        return Ok((value, target));
+    }
+    // Component-wise conversion: scalar to scalar, or vector to same-size vector.
+    let scalar = match (ctx.shape(value_ty), ctx.shape(target)) {
+        (Shape::Scalar(_), Shape::Scalar(to)) => to,
+        (Shape::Vector(from, _), Shape::Vector(to_size, to)) if from == to_size => to,
+        _ => return Err(Error::UnsupportedCast(type_name(&cast.ty))),
+    };
+    let handle = emit(
+        function,
+        body,
+        Expression::As {
+            expr: value,
+            kind: scalar.kind,
+            convert: Some(scalar.width),
+        },
+    )?;
+    Ok((handle, target))
+}
+
+fn type_name(ty: &syn::Type) -> String {
+    match ty {
+        syn::Type::Path(path) => match path.path.segments.last() {
+            Some(seg) => seg.ident.to_string(),
+            None => "type".into(),
+        },
+        _ => "type".into(),
+    }
 }
 
 fn lower_lit(
     ctx: &mut Context,
     function: &mut Function,
     lit: &syn::ExprLit,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+    hint: Option<Scalar>,
+) -> Result<Typed, Error> {
     let (literal, ty) = match &lit.lit {
         syn::Lit::Float(f) => {
             if f.suffix() == "f64" {
@@ -158,17 +304,19 @@ fn lower_lit(
                 ctx.intern_scalar(Scalar::F32),
             )
         }
-        syn::Lit::Int(i) => match i.suffix() {
-            "" | "i32" => (
-                Literal::I32(i.base10_parse().map_err(Error::from)?),
-                ctx.intern_scalar(Scalar::I32),
-            ),
-            "u32" => (
-                Literal::U32(i.base10_parse().map_err(Error::from)?),
-                ctx.intern_scalar(Scalar::U32),
-            ),
-            other => return Err(Error::UnsupportedType(other.into())),
-        },
+        syn::Lit::Int(i) => {
+            let scalar = match (i.suffix(), hint) {
+                ("", Some(hint)) => hint,
+                ("" | "i32", _) => Scalar::I32,
+                ("u32", _) => Scalar::U32,
+                (other, _) => return Err(Error::UnsupportedType(other.into())),
+            };
+            let literal = match scalar.kind {
+                ScalarKind::Uint => Literal::U32(i.base10_parse().map_err(Error::from)?),
+                _ => Literal::I32(i.base10_parse().map_err(Error::from)?),
+            };
+            (literal, ctx.intern_scalar(scalar))
+        }
         syn::Lit::Bool(b) => (Literal::Bool(b.value()), ctx.intern_scalar(Scalar::BOOL)),
         _ => return Err(Error::UnsupportedExpr("literal".into())),
     };
@@ -178,43 +326,127 @@ fn lower_lit(
     Ok((handle, ty))
 }
 
-fn bin_result_ty(
+/// Is this an integer literal with no suffix, and so open to a type hint?
+pub(super) fn is_untyped_int(expr: &Expr) -> bool {
+    match expr {
+        Expr::Paren(inner) => is_untyped_int(&inner.expr),
+        Expr::Group(inner) => is_untyped_int(&inner.expr),
+        Expr::Lit(lit) => matches!(&lit.lit, syn::Lit::Int(i) if i.suffix().is_empty()),
+        _ => false,
+    }
+}
+
+pub(super) fn is_shift(op: BinaryOperator) -> bool {
+    matches!(op, BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight)
+}
+
+/// Result type of `left op right`, rejecting everything Naga's validator would.
+///
+/// Mirrors `naga::valid::ExpressionError::InvalidBinaryOperandTypes`: catching
+/// these here turns a module that fails validation into a clear frontend error.
+pub(super) fn bin_result_ty(
     ctx: &mut Context,
     op: BinaryOperator,
     left: Handle<Type>,
     right: Handle<Type>,
 ) -> Result<Handle<Type>, Error> {
     use BinaryOperator as Bo;
-    if op == Bo::Multiply && left != right {
-        return super::matrix::mul_result_ty(ctx, left, right);
+    use ScalarKind as Sk;
+
+    if op == Bo::Multiply {
+        return super::matrix::multiply_result_ty(ctx, left, right);
+    }
+    if is_shift(op) {
+        return shift_result_ty(ctx, op, left, right);
     }
     if left != right {
         return Err(Error::TypeMismatch);
     }
+
+    let bad = || Error::BadOperandTypes(op_name(op).into());
+    let shape = ctx.shape(left);
     match op {
-        Bo::Equal
-        | Bo::NotEqual
-        | Bo::Less
-        | Bo::LessEqual
-        | Bo::Greater
-        | Bo::GreaterEqual => {
-            if let Some((size, _)) = ctx.as_vector(left) {
-                Ok(ctx.intern_vector(size, Scalar::BOOL))
-            } else {
-                Ok(ctx.intern_scalar(Scalar::BOOL))
-            }
-        }
-        Bo::LogicalAnd | Bo::LogicalOr => {
-            match ctx.module.types[left].inner {
-                TypeInner::Scalar(s) if s == Scalar::BOOL => Ok(left),
-                TypeInner::Vector { scalar, .. } if scalar == Scalar::BOOL => Ok(left),
-                _ => Err(Error::TypeMismatch),
-            }
-        }
-        _ => Ok(left),
+        // Addition and subtraction are the only component-wise operators Naga
+        // also defines on matrices.
+        Bo::Add | Bo::Subtract => match (shape.elem_kind(), shape) {
+            (Some(Sk::Uint | Sk::Sint | Sk::Float), _) | (None, Shape::Matrix(..)) => Ok(left),
+            _ => Err(bad()),
+        },
+        Bo::Divide | Bo::Modulo => match shape.elem_kind() {
+            Some(Sk::Uint | Sk::Sint | Sk::Float) => Ok(left),
+            _ => Err(bad()),
+        },
+        Bo::Equal | Bo::NotEqual => match shape.elem_kind() {
+            Some(_) => Ok(ctx.bool_like(left)),
+            None => Err(bad()),
+        },
+        Bo::Less | Bo::LessEqual | Bo::Greater | Bo::GreaterEqual => match shape.elem_kind() {
+            Some(Sk::Uint | Sk::Sint | Sk::Float) => Ok(ctx.bool_like(left)),
+            _ => Err(bad()),
+        },
+        Bo::LogicalAnd | Bo::LogicalOr => match shape.elem_kind() {
+            Some(Sk::Bool) => Ok(left),
+            _ => Err(bad()),
+        },
+        Bo::And | Bo::InclusiveOr => match shape.elem_kind() {
+            Some(Sk::Bool | Sk::Sint | Sk::Uint) => Ok(left),
+            _ => Err(bad()),
+        },
+        Bo::ExclusiveOr => match shape.elem_kind() {
+            Some(Sk::Sint | Sk::Uint) => Ok(left),
+            _ => Err(bad()),
+        },
+        Bo::Multiply | Bo::ShiftLeft | Bo::ShiftRight => unreachable!("handled above"),
     }
 }
 
+/// Naga wants the shift amount to be `u32`, with the same vector size as the
+/// value being shifted.
+fn shift_result_ty(
+    ctx: &mut Context,
+    op: BinaryOperator,
+    left: Handle<Type>,
+    right: Handle<Type>,
+) -> Result<Handle<Type>, Error> {
+    match ctx.shape(left).elem_kind() {
+        Some(ScalarKind::Sint | ScalarKind::Uint) => {}
+        _ => return Err(Error::BadOperandTypes(op_name(op).into())),
+    }
+    let sizes_match = match (ctx.shape(left), ctx.shape(right)) {
+        (Shape::Scalar(_), Shape::Scalar(s)) => s.kind == ScalarKind::Uint,
+        (Shape::Vector(a, _), Shape::Vector(b, s)) => a == b && s.kind == ScalarKind::Uint,
+        _ => false,
+    };
+    if sizes_match {
+        Ok(left)
+    } else {
+        Err(Error::BadShiftType)
+    }
+}
+
+fn op_name(op: BinaryOperator) -> &'static str {
+    use BinaryOperator as Bo;
+    match op {
+        Bo::Add => "+",
+        Bo::Subtract => "-",
+        Bo::Multiply => "*",
+        Bo::Divide => "/",
+        Bo::Modulo => "%",
+        Bo::Equal => "==",
+        Bo::NotEqual => "!=",
+        Bo::Less => "<",
+        Bo::LessEqual => "<=",
+        Bo::Greater => ">",
+        Bo::GreaterEqual => ">=",
+        Bo::And => "&",
+        Bo::ExclusiveOr => "^",
+        Bo::InclusiveOr => "|",
+        Bo::LogicalAnd => "&&",
+        Bo::LogicalOr => "||",
+        Bo::ShiftLeft => "<<",
+        Bo::ShiftRight => ">>",
+    }
+}
 
 fn map_bin_op(op: &BinOp) -> Result<BinaryOperator, Error> {
     Ok(match op {

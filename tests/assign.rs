@@ -1,10 +1,6 @@
-use nagasaki::{parse_str, to_wgsl, validate};
+mod common;
 
-fn roundtrip(src: &str) -> String {
-    let module = parse_str(src).expect("parse");
-    let info = validate(&module).expect("validate");
-    to_wgsl(&module, &info).expect("wgsl")
-}
+use common::*;
 
 #[test]
 fn assign_local() {
@@ -45,19 +41,12 @@ fn assign_inside_if() {
 
 #[test]
 fn rejects_assign_to_argument() {
-    let err = parse_str("fn f(a: f32, b: f32) -> f32 { a = b; a }").unwrap_err();
-    let msg = err.to_string();
+    let msg = reject("fn f(a: f32, b: f32) -> f32 { a = b; a }");
     assert!(msg.contains("argument") || msg.contains("assign"), "{msg}");
 }
 
 #[test]
 fn rejects_assign_to_literal() {
-    let err = parse_str("fn f(a: f32) -> f32 { 1 = a; a }").unwrap_err();
-    let msg = err.to_string();
+    let msg = reject("fn f(a: f32) -> f32 { 1 = a; a }");
     assert!(msg.contains("assign") || msg.contains("target"), "{msg}");
-}
-
-fn validate_only(src: &str) {
-    let module = parse_str(src).expect(src);
-    validate(&module).expect(src);
 }

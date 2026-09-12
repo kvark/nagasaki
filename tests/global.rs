@@ -1,15 +1,6 @@
-use nagasaki::{parse_str, to_wgsl, validate};
+mod common;
 
-fn roundtrip(src: &str) -> String {
-    let module = parse_str(src).expect("parse");
-    let info = validate(&module).expect("validate");
-    to_wgsl(&module, &info).expect("wgsl")
-}
-
-fn validate_only(src: &str) {
-    let module = parse_str(src).expect(src);
-    validate(&module).expect(src);
-}
+use common::*;
 
 #[test]
 fn uniform_mat4_in_vertex() {
@@ -26,8 +17,14 @@ fn uniform_mat4_in_vertex() {
         }
         "#,
     );
-    assert!(wgsl.contains("@group(0)") || wgsl.contains("group"), "{wgsl}");
-    assert!(wgsl.contains("@binding(0)") || wgsl.contains("binding"), "{wgsl}");
+    assert!(
+        wgsl.contains("@group(0)") || wgsl.contains("group"),
+        "{wgsl}"
+    );
+    assert!(
+        wgsl.contains("@binding(0)") || wgsl.contains("binding"),
+        "{wgsl}"
+    );
     assert!(wgsl.contains("uniform"), "{wgsl}");
 }
 
@@ -104,39 +101,32 @@ fn storage_read_write_assign() {
 
 #[test]
 fn rejects_assign_to_uniform() {
-    let err = parse_str(
+    let msg = reject(
         r#"
         #[group(0)]
         #[binding(0)]
         static mvp: mat4 = ();
         fn f(m: mat4) -> mat4 { mvp = m; mvp }
         "#,
-    )
-    .unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("read-only") || msg.contains("assign"),
-        "{msg}"
     );
+    assert!(msg.contains("read-only") || msg.contains("assign"), "{msg}");
 }
 
 #[test]
 fn rejects_missing_group() {
-    let err = parse_str(
+    let msg = reject(
         r#"
         #[binding(0)]
         static mvp: mat4 = ();
         fn f() -> mat4 { mvp }
         "#,
-    )
-    .unwrap_err();
-    let msg = err.to_string();
+    );
     assert!(msg.contains("group") || msg.contains("binding"), "{msg}");
 }
 
 #[test]
 fn rejects_duplicate_global() {
-    let err = parse_str(
+    let msg = reject(
         r#"
         #[group(0)]
         #[binding(0)]
@@ -146,8 +136,6 @@ fn rejects_duplicate_global() {
         static a: vec4 = ();
         fn f() -> vec4 { a }
         "#,
-    )
-    .unwrap_err();
-    let msg = err.to_string();
+    );
     assert!(msg.contains("duplicate") || msg.contains("a"), "{msg}");
 }

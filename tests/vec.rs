@@ -1,15 +1,6 @@
-use nagasaki::{parse_str, to_wgsl, validate};
+mod common;
 
-fn roundtrip(src: &str) -> String {
-    let module = parse_str(src).expect("parse");
-    let info = validate(&module).expect("validate");
-    to_wgsl(&module, &info).expect("wgsl")
-}
-
-fn validate_only(src: &str) {
-    let module = parse_str(src).expect(src);
-    validate(&module).expect(src);
-}
+use common::*;
 
 #[test]
 fn vec3_compose() {
@@ -103,8 +94,7 @@ fn vec_assign() {
 
 #[test]
 fn rejects_swizzle_out_of_range() {
-    let err = parse_str("fn f(v: vec2) -> f32 { v.z }").unwrap_err();
-    let msg = err.to_string();
+    let msg = reject("fn f(v: vec2) -> f32 { v.z }");
     assert!(
         msg.contains("swizzle") || msg.contains("unsupported"),
         "{msg}"
@@ -113,10 +103,21 @@ fn rejects_swizzle_out_of_range() {
 
 #[test]
 fn rejects_ctor_arity() {
-    let err = parse_str("fn f(a: f32) -> vec3 { vec3(a, a) }").unwrap_err();
-    let msg = err.to_string();
+    let msg = reject("fn f(a: f32) -> vec3 { vec3(a, a) }");
     assert!(
         msg.contains("component") || msg.contains("constructor"),
         "{msg}"
     );
+}
+
+#[test]
+fn typed_constructor_types_its_literals() {
+    let wgsl = roundtrip("fn f() -> vec3<u32> { vec3u(1, 2, 3) }");
+    assert!(wgsl.contains("1u"), "{wgsl}");
+}
+
+#[test]
+fn first_component_types_the_rest() {
+    let wgsl = roundtrip("fn f(a: u32) -> vec3<u32> { vec3(a, 2, 3) }");
+    assert!(wgsl.contains("2u"), "{wgsl}");
 }

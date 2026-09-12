@@ -1,15 +1,7 @@
-use nagasaki::{parse_str, to_wgsl, validate};
+mod common;
 
-fn roundtrip(src: &str) -> String {
-    let module = parse_str(src).expect("parse");
-    let info = validate(&module).expect("validate");
-    to_wgsl(&module, &info).expect("wgsl")
-}
-
-fn validate_only(src: &str) {
-    let module = parse_str(src).expect(src);
-    validate(&module).expect(src);
-}
+use common::*;
+use nagasaki::parse_str;
 
 #[test]
 fn compute_global_id() {
@@ -22,8 +14,14 @@ fn compute_global_id() {
         }
         "#,
     );
-    assert!(wgsl.contains("@compute") || wgsl.contains("compute"), "{wgsl}");
-    assert!(wgsl.contains("workgroup_size") || wgsl.contains("8"), "{wgsl}");
+    assert!(
+        wgsl.contains("@compute") || wgsl.contains("compute"),
+        "{wgsl}"
+    );
+    assert!(
+        wgsl.contains("workgroup_size") || wgsl.contains("8"),
+        "{wgsl}"
+    );
 }
 
 #[test]
@@ -37,7 +35,10 @@ fn vertex_position() {
         }
         "#,
     );
-    assert!(wgsl.contains("@vertex") || wgsl.contains("vertex"), "{wgsl}");
+    assert!(
+        wgsl.contains("@vertex") || wgsl.contains("vertex"),
+        "{wgsl}"
+    );
     assert!(wgsl.contains("position"), "{wgsl}");
 }
 
@@ -90,42 +91,42 @@ fn entry_not_in_functions() {
 
 #[test]
 fn rejects_compute_without_workgroup() {
-    let err = parse_str(
+    let msg = reject(
         r#"
         #[compute]
         fn cs_main(#[builtin(local_invocation_index)] i: u32) {}
         "#,
-    )
-    .unwrap_err();
-    let msg = err.to_string();
+    );
     assert!(msg.contains("workgroup"), "{msg}");
 }
 
 #[test]
 fn rejects_workgroup_on_vertex() {
-    let err = parse_str(
+    let msg = reject(
         r#"
         #[vertex]
         #[workgroup_size(8)]
         #[output(builtin(position))]
         fn vs_main() -> vec4 { vec4(0.0, 0.0, 0.0, 1.0) }
         "#,
-    )
-    .unwrap_err();
-    let msg = err.to_string();
-    assert!(msg.contains("workgroup") || msg.contains("compute"), "{msg}");
+    );
+    assert!(
+        msg.contains("workgroup") || msg.contains("compute"),
+        "{msg}"
+    );
 }
 
 #[test]
 fn rejects_missing_arg_binding() {
-    let err = parse_str(
+    let msg = reject(
         r#"
         #[compute]
         #[workgroup_size(1)]
         fn cs_main(id: vec3<u32>) {}
         "#,
-    )
-    .unwrap_err();
-    let msg = err.to_string();
-    assert!(msg.contains("location") || msg.contains("builtin") || msg.contains("binding"), "{msg}");
+    );
+    assert!(
+        msg.contains("location") || msg.contains("builtin") || msg.contains("binding"),
+        "{msg}"
+    );
 }

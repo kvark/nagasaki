@@ -1,13 +1,11 @@
-use naga::{
-    Block, Expression, Function, Handle, Scalar, SwizzleComponent, Type, VectorSize,
-};
+use naga::{Block, Expression, Function, Handle, Scalar, SwizzleComponent, Type, VectorSize};
 use syn::Expr;
 
 use super::emit::emit;
 use super::env::Env;
-use super::expr::lower_expr;
+use super::expr::{lower_expr, lower_expr_hinted};
 use super::parse_vec_ident;
-use super::Context;
+use super::{Context, Shape, Typed};
 use crate::Error;
 
 pub(super) fn splat_mix(
@@ -19,17 +17,51 @@ pub(super) fn splat_mix(
     right: &mut Handle<Expression>,
     right_ty: &mut Handle<Type>,
 ) -> Result<(), Error> {
-    match (ctx.as_vector(*left_ty), ctx.as_scalar(*left_ty), ctx.as_vector(*right_ty), ctx.as_scalar(*right_ty))
-    {
-        (Some((size, scalar)), _, None, Some(s)) if s == scalar => {
-            *right = emit(function, body, Expression::Splat { size, value: *right })?;
+    match (ctx.shape(*left_ty), ctx.shape(*right_ty)) {
+        (Shape::Vector(size, scalar), Shape::Scalar(s)) if s == scalar => {
+            *right = emit(
+                function,
+                body,
+                Expression::Splat {
+                    size,
+                    value: *right,
+                },
+            )?;
             *right_ty = ctx.intern_vector(size, scalar);
         }
-        (None, Some(s), Some((size, scalar)), _) if s == scalar => {
+        (Shape::Scalar(s), Shape::Vector(size, scalar)) if s == scalar => {
             *left = emit(function, body, Expression::Splat { size, value: *left })?;
             *left_ty = ctx.intern_vector(size, scalar);
         }
         _ => {}
+    }
+    Ok(())
+}
+
+/// Shifting a vector by a single `u32` splats the amount across the lanes, the
+/// way WGSL's `vec << u32` would.
+pub(super) fn splat_shift(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    left_ty: Handle<Type>,
+    right: &mut Handle<Expression>,
+    right_ty: &mut Handle<Type>,
+) -> Result<(), Error> {
+    if let (Shape::Vector(size, _), Shape::Scalar(scalar)) =
+        (ctx.shape(left_ty), ctx.shape(*right_ty))
+    {
+        if scalar == Scalar::U32 {
+            *right = emit(
+                function,
+                body,
+                Expression::Splat {
+                    size,
+                    value: *right,
+                },
+            )?;
+            *right_ty = ctx.intern_vector(size, scalar);
+        }
     }
     Ok(())
 }
@@ -40,35 +72,35 @@ pub(super) fn lower_vec_ctor(
     body: &mut Block,
     call: &syn::ExprCall,
     env: &mut Env,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+) -> Result<Typed, Error> {
     let name = match call.func.as_ref() {
         Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
             path.path.segments[0].ident.to_string()
         }
         _ => return Err(Error::UnsupportedExpr("call".into())),
     };
-    let (size, shorthand) = parse_vec_ident(&name)
-        .ok_or_else(|| Error::BadVecCtor(name.clone()))?;
+    let (size, shorthand) =
+        parse_vec_ident(&name).ok_or_else(|| Error::BadVecCtor(name.clone()))?;
 
+    if call.args.is_empty() {
+        return Err(Error::VecCtorArgs);
+    }
+    // `vec3u(1, 2, 3)` fixes the component type up front; plain `vec3(..)`
+    // takes it from the first argument and the rest follow.
+    let mut hint = shorthand.and_then(|s| Shape::Scalar(s).int_hint());
     let mut components = Vec::new();
     let mut component_tys = Vec::new();
     for arg in &call.args {
-        let (handle, ty) = lower_expr(ctx, function, body, arg, env)?;
+        let (handle, ty) = lower_expr_hinted(ctx, function, body, arg, env, hint)?;
+        hint = hint.or_else(|| ctx.shape(ty).int_hint());
         components.push(handle);
         component_tys.push(ty);
     }
-    if components.is_empty() {
-        return Err(Error::VecCtorArgs);
-    }
 
-    let scalar = if let Some(s) = shorthand {
-        s
-    } else if let Some(s) = ctx.as_scalar(component_tys[0]) {
-        s
-    } else if let Some((_, s)) = ctx.as_vector(component_tys[0]) {
-        s
-    } else {
-        return Err(Error::TypeMismatch);
+    let scalar = match (shorthand, ctx.shape(component_tys[0])) {
+        (Some(s), _) => s,
+        (None, Shape::Scalar(s) | Shape::Vector(_, s)) => s,
+        (None, _) => return Err(Error::TypeMismatch),
     };
 
     let mut width = 0u32;
@@ -106,11 +138,7 @@ pub(super) fn lower_vec_ctor(
     if width != size as u32 {
         return Err(Error::VecCtorArgs);
     }
-    let handle = emit(
-        function,
-        body,
-        Expression::Compose { ty, components },
-    )?;
+    let handle = emit(function, body, Expression::Compose { ty, components })?;
     Ok((handle, ty))
 }
 
@@ -120,22 +148,22 @@ pub(super) fn lower_field(
     body: &mut Block,
     field: &syn::ExprField,
     env: &mut Env,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+) -> Result<Typed, Error> {
     let member = match &field.member {
         syn::Member::Named(ident) => ident.to_string(),
         syn::Member::Unnamed(_) => return Err(Error::UnsupportedExpr("tuple field".into())),
     };
     let (base, base_ty) = lower_expr(ctx, function, body, &field.base, env)?;
     if ctx.as_struct(base_ty).is_some() {
-        return super::structure::lower_struct_field(
-            ctx, function, body, base, base_ty, &member,
-        );
+        return super::structure::lower_struct_field(ctx, function, body, base, base_ty, &member);
     }
     let (vec_size, scalar) = ctx
         .as_vector(base_ty)
         .ok_or_else(|| Error::UnsupportedExpr("field".into()))?;
     let letters: Vec<char> = member.chars().collect();
-    if letters.is_empty() || letters.len() > 4 || !letters.iter().all(|c| matches!(c, 'x' | 'y' | 'z' | 'w'))
+    if letters.is_empty()
+        || letters.len() > 4
+        || !letters.iter().all(|c| matches!(c, 'x' | 'y' | 'z' | 'w'))
     {
         return Err(Error::UnsupportedSwizzle(member));
     }
@@ -194,7 +222,7 @@ pub(super) fn lower_index(
     body: &mut Block,
     index: &syn::ExprIndex,
     env: &mut Env,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+) -> Result<Typed, Error> {
     let (base, base_ty) = lower_expr(ctx, function, body, &index.expr, env)?;
     let (bound, result_ty) = if let Some((vec_size, scalar)) = ctx.as_vector(base_ty) {
         (vec_size as u32, ctx.intern_scalar(scalar))
@@ -212,11 +240,7 @@ pub(super) fn lower_index(
         if idx >= bound {
             return Err(Error::VecIndexRange);
         }
-        let handle = emit(
-            function,
-            body,
-            Expression::AccessIndex { base, index: idx },
-        )?;
+        let handle = emit(function, body, Expression::AccessIndex { base, index: idx })?;
         return Ok((handle, result_ty));
     }
     let (idx_expr, idx_ty) = lower_expr(ctx, function, body, &index.index, env)?;

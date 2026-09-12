@@ -1,10 +1,6 @@
-use nagasaki::{parse_str, to_wgsl, validate};
+mod common;
 
-fn roundtrip(src: &str) -> String {
-    let module = parse_str(src).expect("parse");
-    let info = validate(&module).expect("validate");
-    to_wgsl(&module, &info).expect("wgsl")
-}
+use common::*;
 
 #[test]
 fn let_inferred() {
@@ -73,19 +69,69 @@ fn nested_block_tail() {
 
 #[test]
 fn rejects_bare_let() {
-    let err = parse_str("fn f(a: f32) -> f32 { let x; x }").unwrap_err();
-    let msg = err.to_string();
+    let msg = reject("fn f(a: f32) -> f32 { let x; x }");
     assert!(msg.contains("let") || msg.contains("initializer"), "{msg}");
 }
 
 #[test]
 fn rejects_if_expr_without_else() {
-    let err = parse_str("fn f(c: bool, a: f32) -> f32 { if c { a } }").unwrap_err();
-    let msg = err.to_string();
+    let msg = reject("fn f(c: bool, a: f32) -> f32 { let x = if c { a }; x }");
     assert!(msg.contains("else"), "{msg}");
 }
 
-fn validate_only(src: &str) {
-    let module = parse_str(src).expect(src);
-    validate(&module).expect(src);
+#[test]
+fn rejects_body_that_can_fall_through() {
+    let msg = reject("fn f(c: bool, a: f32) -> f32 { if c { a } }");
+    assert!(msg.contains("without returning"), "{msg}");
+}
+
+#[test]
+fn return_in_both_branches() {
+    validate_only("fn f(a: f32) -> f32 { if a > 0.0 { return a; } else { return -a; } }");
+}
+
+#[test]
+fn tail_if_that_returns_from_both_branches() {
+    let wgsl = roundtrip("fn f(a: f32) -> f32 { if a > 0.0 { return a; } else { return -a; } }");
+    assert_eq!(wgsl.matches("return").count(), 2, "{wgsl}");
+}
+
+#[test]
+fn tail_if_else_if_chain_that_returns() {
+    validate_only(
+        r#"
+        fn sign_of(a: f32) -> f32 {
+            if a > 0.0 {
+                return 1.0;
+            } else if a < 0.0 {
+                return -1.0;
+            } else {
+                return 0.0;
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn loop_without_break_counts_as_returning() {
+    validate_only("fn f() -> f32 { loop { } }");
+}
+
+#[test]
+fn rejects_return_missing_from_one_branch() {
+    let msg = reject("fn f(a: f32) -> f32 { if a > 0.0 { return a; } else { let x = a; } }");
+    assert!(msg.contains("without returning"), "{msg}");
+}
+
+#[test]
+fn rejects_loop_with_break_as_the_only_exit() {
+    let msg = reject("fn f(a: f32) -> f32 { loop { break; } }");
+    assert!(msg.contains("without returning"), "{msg}");
+}
+
+#[test]
+fn let_annotation_types_an_untyped_literal() {
+    let wgsl = roundtrip("fn f() -> u32 { let x: u32 = 1; x }");
+    assert!(wgsl.contains("1u"), "{wgsl}");
 }

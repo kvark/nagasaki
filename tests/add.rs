@@ -1,24 +1,18 @@
-use nagasaki::{parse_str, to_wgsl, validate};
+mod common;
+
+use common::*;
+use nagasaki::parse_str;
 
 #[test]
 fn add_lowers_and_validates() {
-    let src = r#"
-        fn add(a: f32, b: f32) -> f32 {
-            a + b
-        }
-    "#;
-    let module = parse_str(src).unwrap();
-    assert_eq!(module.functions.len(), 1);
-    let info = validate(&module).unwrap();
-    let wgsl = to_wgsl(&module, &info).unwrap();
+    let wgsl = roundtrip("fn add(a: f32, b: f32) -> f32 { a + b }");
     assert!(wgsl.contains("fn add(a: f32, b: f32) -> f32"), "{wgsl}");
     assert!(wgsl.contains("a + b") || wgsl.contains("(a + b)"), "{wgsl}");
 }
 
 #[test]
 fn explicit_return() {
-    let module = parse_str("fn add(a: f32, b: f32) -> f32 { return a + b; }").unwrap();
-    validate(&module).unwrap();
+    validate_only("fn add(a: f32, b: f32) -> f32 { return a + b; }");
 }
 
 #[test]
@@ -30,15 +24,10 @@ fn arithmetic_and_compare() {
     "#;
     let module = parse_str(src).unwrap();
     assert_eq!(module.functions.len(), 3);
-    validate(&module).unwrap();
+    validate_only(src);
 }
 
 #[test]
 fn unary_and_bool() {
-    let src = r#"
-        fn neg(x: f32) -> f32 { -x }
-        fn not_b(x: bool) -> bool { !x }
-    "#;
-    let module = parse_str(src).unwrap();
-    validate(&module).unwrap();
+    validate_only("fn neg(x: f32) -> f32 { -x } fn not_b(x: bool) -> bool { !x }");
 }

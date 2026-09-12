@@ -1,15 +1,6 @@
-use nagasaki::{parse_str, to_wgsl, validate};
+mod common;
 
-fn roundtrip(src: &str) -> String {
-    let module = parse_str(src).expect("parse");
-    let info = validate(&module).expect("validate");
-    to_wgsl(&module, &info).expect("wgsl")
-}
-
-fn validate_only(src: &str) {
-    let module = parse_str(src).expect(src);
-    validate(&module).expect(src);
-}
+use common::*;
 
 #[test]
 fn user_fn_call() {
@@ -61,20 +52,69 @@ fn clamp_mix() {
 
 #[test]
 fn rejects_unknown_fn() {
-    let err = parse_str("fn f(a: f32) -> f32 { foo(a) }").unwrap_err();
-    let msg = err.to_string();
-    assert!(msg.contains("foo") || msg.contains("unknown") || msg.contains("constructor"), "{msg}");
+    let msg = reject("fn f(a: f32) -> f32 { foo(a) }");
+    assert!(
+        msg.contains("foo") || msg.contains("unknown") || msg.contains("constructor"),
+        "{msg}"
+    );
 }
 
 #[test]
 fn rejects_forward_ref() {
-    let err = parse_str(
+    let msg = reject(
         r#"
         fn a(x: f32) -> f32 { b(x) }
         fn b(x: f32) -> f32 { x }
         "#,
-    )
-    .unwrap_err();
-    let msg = err.to_string();
+    );
     assert!(msg.contains("b") || msg.contains("unknown"), "{msg}");
+}
+
+#[test]
+fn user_function_shadows_a_builtin() {
+    // Resolving `length` to the builtin here would silently call something
+    // other than what the source says.
+    let wgsl = roundtrip("fn length(a: f32) -> f32 { a + 1.0 } fn g(x: f32) -> f32 { length(x) }");
+    assert!(wgsl.contains("length_(x)"), "{wgsl}");
+}
+
+#[test]
+fn rejects_duplicate_function_names() {
+    let msg = reject("fn f(a: f32) -> f32 { a } fn f(a: f32) -> f32 { a }");
+    assert!(msg.contains("duplicate"), "{msg}");
+}
+
+#[test]
+fn rejects_entry_point_clashing_with_a_function() {
+    let msg = reject(
+        r#"
+        fn fs(a: f32) -> f32 { a }
+        #[fragment] #[output(location(0))] fn fs() -> vec4 { vec4(1.0) }
+        "#,
+    );
+    assert!(msg.contains("duplicate"), "{msg}");
+}
+
+#[test]
+fn untyped_literal_takes_the_parameter_type() {
+    let wgsl = roundtrip("fn g(a: u32) -> u32 { a } fn f() -> u32 { g(1) }");
+    assert!(wgsl.contains("g(1u)"), "{wgsl}");
+}
+
+#[test]
+fn untyped_literal_follows_the_first_math_argument() {
+    let wgsl = roundtrip("fn f(a: u32) -> u32 { clamp(a, 0, 10) }");
+    assert!(wgsl.contains("0u") && wgsl.contains("10u"), "{wgsl}");
+}
+
+#[test]
+fn sign_is_not_abs() {
+    let wgsl = roundtrip("fn f(a: f32) -> f32 { sign(a) }");
+    assert!(wgsl.contains("sign("), "{wgsl}");
+}
+
+#[test]
+fn names_a_for_loop_in_the_error() {
+    let msg = reject("fn f(a: f32) -> f32 { for i in 0..3 { } a }");
+    assert!(msg.contains("for"), "{msg}");
 }

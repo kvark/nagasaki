@@ -3,9 +3,9 @@ use syn::Expr;
 
 use super::emit::emit;
 use super::env::Env;
-use super::expr::lower_expr;
+use super::expr::lower_expr_hinted;
 use super::parse_mat_ident;
-use super::Context;
+use super::{Context, Shape, Typed};
 use crate::Error;
 
 pub(super) fn lower_mat_ctor(
@@ -14,7 +14,7 @@ pub(super) fn lower_mat_ctor(
     body: &mut Block,
     call: &syn::ExprCall,
     env: &mut Env,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+) -> Result<Typed, Error> {
     let name = match call.func.as_ref() {
         Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
             path.path.segments[0].ident.to_string()
@@ -24,27 +24,21 @@ pub(super) fn lower_mat_ctor(
     let (columns, rows, shorthand) =
         parse_mat_ident(&name).ok_or_else(|| Error::BadMatCtor(name.clone()))?;
 
+    if call.args.is_empty() {
+        return Err(Error::MatCtorArgs);
+    }
     let mut components = Vec::new();
     let mut component_tys = Vec::new();
     for arg in &call.args {
-        let (handle, ty) = lower_expr(ctx, function, body, arg, env)?;
+        let (handle, ty) = lower_expr_hinted(ctx, function, body, arg, env, None)?;
         components.push(handle);
         component_tys.push(ty);
     }
-    if components.is_empty() {
-        return Err(Error::MatCtorArgs);
-    }
 
-    let scalar = if let Some(s) = shorthand {
-        s
-    } else if let Some(s) = ctx.as_scalar(component_tys[0]) {
-        s
-    } else if let Some((_, s)) = ctx.as_vector(component_tys[0]) {
-        s
-    } else if let Some((_, _, s)) = ctx.as_matrix(component_tys[0]) {
-        s
-    } else {
-        return Err(Error::TypeMismatch);
+    let scalar = match (shorthand, ctx.shape(component_tys[0])) {
+        (Some(s), _) => s,
+        (None, Shape::Scalar(s) | Shape::Vector(_, s) | Shape::Matrix(_, _, s)) => s,
+        (None, Shape::Other) => return Err(Error::TypeMismatch),
     };
 
     let ty = ctx.intern_matrix(columns, rows, scalar);
@@ -60,17 +54,16 @@ pub(super) fn lower_mat_ctor(
             .iter()
             .all(|&t| ctx.as_vector(t) == Some((rows, scalar)))
     {
-        let handle = emit(
-            function,
-            body,
-            Expression::Compose { ty, components },
-        )?;
+        let handle = emit(function, body, Expression::Compose { ty, components })?;
         return Ok((handle, ty));
     }
 
     // Flattened column-major scalars: mat2(a, b, c, d)
     let flat = (columns as usize) * (rows as usize);
-    if components.len() == flat && component_tys.iter().all(|&t| ctx.as_scalar(t) == Some(scalar))
+    if components.len() == flat
+        && component_tys
+            .iter()
+            .all(|&t| ctx.as_scalar(t) == Some(scalar))
     {
         let mut columns_expr = Vec::new();
         let col_ty = ctx.intern_vector(rows, scalar);
@@ -102,35 +95,47 @@ pub(super) fn lower_mat_ctor(
     Err(Error::MatCtorArgs)
 }
 
-/// Result type of `left * right` when one side is a matrix (Naga multiply rules).
-pub(super) fn mul_result_ty(
+/// Result type of `left * right`.
+///
+/// Naga gives `Multiply` the widest operand table of any operator: scalars,
+/// component-wise vectors, vector/scalar and matrix/scalar scaling, the three
+/// linear-algebra products, and nothing else.
+pub(super) fn multiply_result_ty(
     ctx: &mut Context,
     left: Handle<Type>,
     right: Handle<Type>,
 ) -> Result<Handle<Type>, Error> {
-    let lmat = ctx.as_matrix(left);
-    let rmat = ctx.as_matrix(right);
-    let lvec = ctx.as_vector(left);
-    let rvec = ctx.as_vector(right);
-    let lsc = ctx.as_scalar(left);
-    let rsc = ctx.as_scalar(right);
+    use naga::ScalarKind as Sk;
 
-    match (lmat, lvec, lsc, rmat, rvec, rsc) {
-        // matCxR * vecC → vecR
-        (Some((columns, rows, s)), _, _, None, Some((size, s2)), _) if columns == size && s == s2 => {
-            Ok(ctx.intern_vector(rows, s))
+    let numeric = |s: naga::Scalar| matches!(s.kind, Sk::Uint | Sk::Sint | Sk::Float);
+    let float = |s: naga::Scalar| s.kind == Sk::Float;
+    let bad = || Error::BadOperandTypes("*".into());
+
+    match (ctx.shape(left), ctx.shape(right)) {
+        (Shape::Scalar(a), Shape::Scalar(b)) if a == b && numeric(a) => Ok(left),
+        (Shape::Vector(n, a), Shape::Vector(m, b)) if n == m && a == b && numeric(a) => Ok(left),
+        (Shape::Vector(_, a), Shape::Scalar(b)) if a == b && numeric(a) => Ok(left),
+        (Shape::Scalar(a), Shape::Vector(_, b)) if a == b && numeric(a) => Ok(right),
+        // matCxR * vecC -> vecR
+        (Shape::Matrix(columns, rows, a), Shape::Vector(n, b))
+            if columns == n && a == b && float(a) =>
+        {
+            Ok(ctx.intern_vector(rows, a))
         }
-        // vecR * matCxR → vecC
-        (None, Some((size, s2)), _, Some((columns, rows, s)), _, _) if size == rows && s == s2 => {
-            Ok(ctx.intern_vector(columns, s))
+        // vecR * matCxR -> vecC
+        (Shape::Vector(n, a), Shape::Matrix(columns, rows, b))
+            if n == rows && a == b && float(a) =>
+        {
+            Ok(ctx.intern_vector(columns, a))
         }
-        // matKxR * matCxK → matCxR
-        (Some((c1, r1, s1)), _, _, Some((c2, r2, s2)), _, _) if c1 == r2 && s1 == s2 => {
-            Ok(ctx.intern_matrix(c2, r1, s1))
+        // matKxR * matCxK -> matCxR
+        (Shape::Matrix(k, rows, a), Shape::Matrix(columns, k2, b))
+            if k == k2 && a == b && float(a) =>
+        {
+            Ok(ctx.intern_matrix(columns, rows, a))
         }
-        // mat * scalar / scalar * mat
-        (Some((_, _, s)), _, _, None, None, Some(s2)) if s == s2 => Ok(left),
-        (None, None, Some(s2), Some((_, _, s)), _, _) if s == s2 => Ok(right),
-        _ => Err(Error::TypeMismatch),
+        (Shape::Matrix(_, _, a), Shape::Scalar(b)) if a == b && float(a) => Ok(left),
+        (Shape::Scalar(a), Shape::Matrix(_, _, b)) if a == b && float(a) => Ok(right),
+        _ => Err(bad()),
     }
 }

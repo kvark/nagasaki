@@ -1,17 +1,40 @@
-use naga::{Block, Expression, Function, Handle, LocalVariable, Span, Statement, Type};
+use naga::{Block, Expression, Function, LocalVariable, Span, Statement};
 use syn::{Block as SynBlock, Expr, Local, Pat, Stmt, Type as SynType};
 
 use super::emit::emit;
 use super::env::{Env, Slot};
-use super::expr::lower_expr;
-use super::Context;
+use super::expr::{lower_expr, lower_expr_hinted};
+use super::{Context, Typed};
 use crate::Error;
 
-fn is_stmt_like(expr: &Expr) -> bool {
-    matches!(
-        expr,
-        Expr::Loop(_) | Expr::While(_) | Expr::Break(_) | Expr::Continue(_) | Expr::ForLoop(_)
-    )
+/// Does this expression produce a value in tail position?
+///
+/// `if cond { return a; } else { return b; }` is a perfectly good function body
+/// even though the `if` itself yields nothing, so the shape of the branches —
+/// not just the keyword — decides whether to lower it as a value or a statement.
+fn yields_value(expr: &Expr) -> bool {
+    match expr {
+        Expr::Break(_)
+        | Expr::Continue(_)
+        | Expr::ForLoop(_)
+        | Expr::Loop(_)
+        | Expr::Return(_)
+        | Expr::While(_) => false,
+        Expr::Paren(inner) => yields_value(&inner.expr),
+        Expr::Group(inner) => yields_value(&inner.expr),
+        Expr::Block(b) => block_yields_value(&b.block),
+        Expr::If(if_expr) => match &if_expr.else_branch {
+            Some((_, else_expr)) => {
+                block_yields_value(&if_expr.then_branch) && yields_value(else_expr)
+            }
+            None => false,
+        },
+        _ => true,
+    }
+}
+
+fn block_yields_value(block: &SynBlock) -> bool {
+    matches!(block.stmts.last(), Some(Stmt::Expr(expr, None)) if yields_value(expr))
 }
 
 pub(super) fn lower_block(
@@ -20,7 +43,7 @@ pub(super) fn lower_block(
     body: &mut Block,
     block: &SynBlock,
     env: &mut Env,
-) -> Result<Option<(Handle<Expression>, Handle<Type>)>, Error> {
+) -> Result<Option<Typed>, Error> {
     let mut tail = None;
     for (i, stmt) in block.stmts.iter().enumerate() {
         let last = i + 1 == block.stmts.len();
@@ -38,7 +61,7 @@ pub(super) fn lower_block(
                 tail = None;
             }
             Stmt::Expr(expr, semi) => {
-                if last && semi.is_none() && !is_stmt_like(expr) {
+                if last && semi.is_none() && yields_value(expr) {
                     tail = Some(lower_expr(ctx, function, body, expr, env)?);
                 } else {
                     lower_stmt_expr(ctx, function, body, expr, env)?;
@@ -50,6 +73,32 @@ pub(super) fn lower_block(
         }
     }
     Ok(tail)
+}
+
+/// Does control flow always leave `block` through a jump, rather than running
+/// off the end?
+///
+/// A function with a result has to return on every path. Naga's validator does
+/// not check this, so a body like `if c { return a; }` would otherwise reach a
+/// backend as a shader that falls off the end.
+pub(super) fn always_jumps(block: &Block) -> bool {
+    match block.last() {
+        Some(Statement::Return { .. } | Statement::Kill) => true,
+        Some(Statement::If { accept, reject, .. }) => always_jumps(accept) && always_jumps(reject),
+        // A loop nobody breaks out of never falls through.
+        Some(Statement::Loop { body, break_if, .. }) => break_if.is_none() && !has_break(body),
+        _ => false,
+    }
+}
+
+/// Is there a `break` targeting *this* loop? Nested loops capture their own.
+fn has_break(block: &Block) -> bool {
+    block.iter().any(|stmt| match stmt {
+        Statement::Break => true,
+        Statement::If { accept, reject, .. } => has_break(accept) || has_break(reject),
+        Statement::Block(inner) => has_break(inner),
+        _ => false,
+    })
 }
 
 fn lower_stmt_expr(
@@ -64,6 +113,7 @@ fn lower_stmt_expr(
         Expr::While(while_expr) => lower_while(ctx, function, body, while_expr, env),
         Expr::Loop(loop_expr) => lower_loop(ctx, function, body, loop_expr, env),
         Expr::Break(brk) => lower_break(body, brk),
+        Expr::ForLoop(_) => Err(Error::UnsupportedStmt("`for` loop".into())),
         Expr::Continue(cont) => lower_continue(body, cont),
         Expr::Block(b) => {
             env.push_scope();
@@ -173,10 +223,11 @@ fn lower_local(
         return Err(Error::UnsupportedStmt("let else".into()));
     }
     let (name, annot) = bind_ident_pat(&local.pat)?;
-    let (value, value_ty) = lower_expr(ctx, function, body, &init.expr, env)?;
+    let annot = annot.map(|ty| ctx.lower_type(ty)).transpose()?;
+    let hint = annot.and_then(|ty| ctx.shape(ty).int_hint());
+    let (value, value_ty) = lower_expr_hinted(ctx, function, body, &init.expr, env, hint)?;
     let ty = match annot {
         Some(ty) => {
-            let ty = ctx.lower_type(ty)?;
             if ty != value_ty {
                 return Err(Error::TypeMismatch);
             }
@@ -254,7 +305,7 @@ pub(super) fn lower_if_expr(
     body: &mut Block,
     if_expr: &syn::ExprIf,
     env: &mut Env,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+) -> Result<Typed, Error> {
     let else_expr = if_expr
         .else_branch
         .as_ref()

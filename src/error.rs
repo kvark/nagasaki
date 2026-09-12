@@ -16,6 +16,8 @@ pub enum Error {
     UnknownIdent(String),
     #[error("function `{0}` has no return type")]
     MissingReturnType(String),
+    #[error("function `{0}` can finish without returning a value")]
+    MissingReturn(String),
     #[error("receiver arguments are not supported")]
     Receiver,
     #[error("pattern parameters are not supported")]
@@ -28,6 +30,12 @@ pub enum Error {
     MissingBlockValue,
     #[error("type mismatch")]
     TypeMismatch,
+    #[error("operator `{0}` does not apply to these operand types")]
+    BadOperandTypes(String),
+    #[error("shift amount must be `u32` and match the left operand's size")]
+    BadShiftType,
+    #[error("unsupported cast to `{0}`")]
+    UnsupportedCast(String),
     #[error("cannot assign to function argument `{0}`")]
     AssignToArgument(String),
     #[error("assignment target must be a local identifier")]
@@ -46,6 +54,8 @@ pub enum Error {
     VecIndexRange,
     #[error("conflicting shader stage attributes")]
     ConflictingStage,
+    #[error("duplicate `#[{0}]` attribute")]
+    DuplicateAttribute(String),
     #[error("unsupported binding `{0}`")]
     UnsupportedBinding(String),
     #[error("entry point argument `{0}` needs #[location] or #[builtin]")]
@@ -58,6 +68,8 @@ pub enum Error {
     MissingReturnBinding(String),
     #[error("unknown function `{0}`")]
     UnknownFunction(String),
+    #[error("duplicate function `{0}`")]
+    DuplicateFunction(String),
     #[error("wrong number of arguments for `{0}`")]
     WrongArgCount(String),
     #[error("unsupported matrix constructor `{0}`")]
@@ -84,4 +96,10 @@ pub enum Error {
     MissingStructField(String),
     #[error("wrong number of fields for struct `{0}`")]
     StructFieldCount(String),
+    #[error("struct `{0}` mixes bound and unbound fields")]
+    MixedStructBindings(String),
+    #[error("entry point `{0}` returns a struct with field bindings; drop `#[output(...)]`")]
+    RedundantReturnBinding(String),
+    #[error("`#[location]` field `{0}` is an integer, so it needs `#[flat]`")]
+    MissingFlat(String),
 }
