@@ -97,12 +97,14 @@ built here needs no WGSL round trip to reach it.
 
 ### Interpolation
 
-On entry-point arguments and results, interpolation is filled in where WGSL
-needs it — `perspective` for floats, `flat` for integers — on vertex outputs and
-fragment inputs.
+A float `#[location]` binding gets the default every shading language shares —
+perspective-correct, center-sampled — on entry-point arguments, results and
+struct fields alike. This is the same rule Naga's own WGSL frontend applies, so
+a shader ported from WGSL produces the same module as the WGSL did; the backend
+prints nothing for the default, so it stays invisible where it does not apply.
 
-Struct fields are shared between stages, so only the float default is applied
-there. An integer `#[location]` field that is interpolated has to say so:
+Integers cannot be interpolated, so an integer `#[location]` that *is* — a
+vertex output or a fragment input — has to say `#[flat]`:
 
 ```rust
 struct VsOut {
@@ -114,7 +116,15 @@ struct VsOut {
 
 A struct is either plain data or a shader interface: binding some fields and not
 others is rejected. An entry point returning a bound struct does not take
-`#[output(...)]`.
+`#[output(...)]`, and a struct argument whose fields carry no bindings is left
+for the host to fill in — which is how Blade supplies vertex attributes.
+
+### Blade
+
+`tests/blade_shaders.rs` ports shaders from [Blade][blade] and checks them
+against the WGSL they came from: Naga parses the original, nagasaki parses the
+port, and the two modules must describe the same globals, entry points, struct
+layouts and bindings.
 
 ## Example
 
