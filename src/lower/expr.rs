@@ -94,7 +94,15 @@ pub(super) fn lower_expr_hinted(
 }
 
 /// A module-level `const` referenced from a function body.
-fn lower_const_ref(ctx: &Context, function: &mut Function, name: &str) -> Result<Typed, Error> {
+fn lower_const_ref(ctx: &mut Context, function: &mut Function, name: &str) -> Result<Typed, Error> {
+    // WGSL predeclares the ray flags and intersection kinds as bare names.
+    if let Some(value) = super::ray::predeclared_const(name) {
+        let handle = function.expressions.append(
+            Expression::Literal(naga::Literal::U32(value)),
+            Span::UNDEFINED,
+        );
+        return Ok((handle, ctx.intern_scalar(Scalar::U32)));
+    }
     let info = ctx
         .consts
         .iter()

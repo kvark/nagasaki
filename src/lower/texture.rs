@@ -197,12 +197,20 @@ fn parse_format(ty: &syn::Type) -> Option<StorageFormat> {
     })
 }
 
-/// Images and samplers live in the handle address space, whatever the
-/// declaration says.
+/// Images, samplers and acceleration structures live in the handle address
+/// space: they name a resource rather than memory, so there is no space to
+/// choose and nothing to load through a pointer.
 pub(super) fn is_handle(ctx: &Context, ty: Handle<Type>) -> bool {
     matches!(
         ctx.module.types[ty].inner,
-        TypeInner::Image { .. } | TypeInner::Sampler { .. }
+        TypeInner::Image { .. }
+            | TypeInner::Sampler { .. }
+            | TypeInner::AccelerationStructure { .. }
+    ) || matches!(
+        ctx.module.types[ty].inner,
+        // A binding array of textures is a handle; one of buffers is storage,
+        // and takes an address space like any other buffer.
+        TypeInner::BindingArray { base, .. } if is_handle(ctx, base)
     )
 }
 

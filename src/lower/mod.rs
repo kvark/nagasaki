@@ -17,6 +17,7 @@ mod expr;
 mod global;
 mod matrix;
 mod place;
+mod ray;
 mod stmt;
 mod structure;
 mod texture;
@@ -234,8 +235,29 @@ impl Context {
         // Textures and samplers take their own argument shapes —
         // `texture_storage_2d<Format, Access>` has two — so they are resolved
         // before the one-argument rule below.
+        if name == "binding_array" {
+            // The optional count is a const argument, so the element type is
+            // picked out rather than taken as the only argument.
+            let args = type_args_only(seg);
+            let [base] = args[..] else {
+                return Err(Error::UnsupportedType("binding_array".into()));
+            };
+            let base = self.lower_type(base)?;
+            let size = match binding_array_len(seg)? {
+                Some(len) => ArraySize::Constant(len),
+                None => ArraySize::Dynamic,
+            };
+            return Ok(self.intern_handle_type(TypeInner::BindingArray { base, size }));
+        }
+
         if let Some(result) = texture::parse_handle_type(self, &name, &collect_type_args(seg)?) {
             return result;
+        }
+        if let Some(ty) = ray::parse_ray_type(self, &name) {
+            return Ok(ty);
+        }
+        if let Some(ty) = ray::special_struct(self, &name) {
+            return Ok(ty);
         }
 
         let type_arg = match &seg.arguments {
@@ -249,6 +271,8 @@ impl Context {
             _ => return Err(Error::UnsupportedType(name)),
         };
 
+        // `binding_array<T>` is a bound array of resources: a texture array in
+        // a descriptor set, not memory.
         if name == "atomic" {
             let scalar = match type_arg {
                 Some(inner) => lower_scalar_ident(inner)?,
@@ -336,12 +360,15 @@ impl Context {
         NonZeroU32::new(value).ok_or_else(|| Error::UnsupportedType("zero-length array".into()))
     }
 
-    pub(super) fn struct_by_name(&self, name: &str) -> Option<Handle<Type>> {
-        self.structs
+    pub(super) fn struct_by_name(&mut self, name: &str) -> Option<Handle<Type>> {
+        let declared = self
+            .structs
             .iter()
             .rev()
             .find(|(n, _)| n == name)
-            .map(|(_, h)| *h)
+            .map(|(_, h)| *h);
+        // `RayDesc` and `RayIntersection` are Naga's, generated on first use.
+        declared.or_else(|| ray::special_struct(self, name))
     }
 
     /// What `ty` points at, if it is a pointer.
@@ -516,6 +543,41 @@ pub(super) fn parse_mat_ident(name: &str) -> Option<(VectorSize, VectorSize, Opt
             }
         }
     }
+}
+
+/// The type arguments of `seg`, ignoring any const ones.
+fn type_args_only(seg: &syn::PathSegment) -> Vec<&syn::Type> {
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return Vec::new();
+    };
+    args.args
+        .iter()
+        .filter_map(|arg| match arg {
+            syn::GenericArgument::Type(ty) => Some(ty),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The count in `binding_array<T, N>`, which `syn` parses as a const argument.
+fn binding_array_len(seg: &syn::PathSegment) -> Result<Option<NonZeroU32>, Error> {
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return Ok(None);
+    };
+    for arg in &args.args {
+        let value = match arg {
+            syn::GenericArgument::Const(syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(int),
+                ..
+            })) => int.base10_parse::<u32>().map_err(Error::from)?,
+            syn::GenericArgument::Type(_) => continue,
+            _ => return Err(Error::UnsupportedType("binding_array".into())),
+        };
+        return NonZeroU32::new(value)
+            .map(Some)
+            .ok_or_else(|| Error::UnsupportedType("zero-length binding_array".into()));
+    }
+    Ok(None)
 }
 
 /// Every angle-bracketed type argument of `seg`, in order.

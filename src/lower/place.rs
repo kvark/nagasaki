@@ -183,6 +183,13 @@ pub(super) fn swizzle_components(member: &str) -> Option<Vec<u32>> {
 /// The bound and element type of an indexable `ty`. A runtime-sized array has
 /// no bound to check a literal index against.
 pub(super) fn element(ctx: &mut Context, ty: Handle<Type>) -> Option<(Option<u32>, Handle<Type>)> {
+    if let naga::TypeInner::BindingArray { base, size } = ctx.module.types[ty].inner {
+        let bound = match size {
+            naga::ArraySize::Constant(n) => Some(n.get()),
+            _ => None,
+        };
+        return Some((bound, base));
+    }
     if let Some((base, size)) = ctx.as_array(ty) {
         let bound = match size {
             naga::ArraySize::Constant(n) => Some(n.get()),
