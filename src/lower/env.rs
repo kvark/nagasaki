@@ -1,10 +1,12 @@
-use naga::{Expression, Handle, Type};
+use naga::{AddressSpace, Expression, Handle, Type};
 
 pub(crate) struct Binding {
     pub name: String,
     pub slot: Slot,
     pub ty: Handle<Type>,
     pub writable: bool,
+    /// Where a `Ptr` slot points. Meaningless for a `Value`.
+    pub space: AddressSpace,
 }
 
 pub(crate) enum Slot {
@@ -30,16 +32,25 @@ impl Env {
         self.bindings.truncate(start);
     }
 
+    /// A local: writable, and living in function memory.
     pub fn push(&mut self, name: String, slot: Slot, ty: Handle<Type>) {
-        self.push_rw(name, slot, ty, true);
+        self.push_in(name, slot, ty, true, AddressSpace::Function);
     }
 
-    pub fn push_rw(&mut self, name: String, slot: Slot, ty: Handle<Type>, writable: bool) {
+    pub fn push_in(
+        &mut self,
+        name: String,
+        slot: Slot,
+        ty: Handle<Type>,
+        writable: bool,
+        space: AddressSpace,
+    ) {
         self.bindings.push(Binding {
             name,
             slot,
             ty,
             writable,
+            space,
         });
     }
 

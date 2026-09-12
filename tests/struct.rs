@@ -1,15 +1,6 @@
-use nagasaki::{parse_str, to_wgsl, validate};
+mod common;
 
-fn roundtrip(src: &str) -> String {
-    let module = parse_str(src).expect("parse");
-    let info = validate(&module).expect("validate");
-    to_wgsl(&module, &info).expect("wgsl")
-}
-
-fn validate_only(src: &str) {
-    let module = parse_str(src).expect(src);
-    validate(&module).expect(src);
-}
+use common::*;
 
 #[test]
 fn struct_field_access() {
@@ -86,33 +77,31 @@ fn struct_let_and_return() {
 
 #[test]
 fn rejects_unknown_field() {
-    let err = parse_str(
+    let msg = reject(
         r#"
         struct Pair { a: f32, b: f32 }
         fn f(p: Pair) -> f32 { p.c }
         "#,
-    )
-    .unwrap_err();
-    let msg = err.to_string();
+    );
     assert!(msg.contains("field") || msg.contains("c"), "{msg}");
 }
 
 #[test]
 fn rejects_missing_field() {
-    let err = parse_str(
+    let msg = reject(
         r#"
         struct Pair { a: f32, b: f32 }
         fn f(a: f32) -> Pair { Pair { a } }
         "#,
-    )
-    .unwrap_err();
-    let msg = err.to_string();
+    );
     assert!(msg.contains("field") || msg.contains("b"), "{msg}");
 }
 
 #[test]
 fn rejects_unknown_struct() {
-    let err = parse_str("fn f() -> Ghost { Ghost { a: 1.0 } }").unwrap_err();
-    let msg = err.to_string();
-    assert!(msg.contains("Ghost") || msg.contains("struct") || msg.contains("type"), "{msg}");
+    let msg = reject("fn f() -> Ghost { Ghost { a: 1.0 } }");
+    assert!(
+        msg.contains("Ghost") || msg.contains("struct") || msg.contains("type"),
+        "{msg}"
+    );
 }

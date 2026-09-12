@@ -5,8 +5,8 @@ use syn::{Fields, ItemStruct};
 
 use super::emit::emit;
 use super::env::Env;
-use super::expr::lower_expr;
-use super::Context;
+use super::expr::lower_expr_hinted;
+use super::{Context, Typed};
 use crate::Error;
 
 pub(super) fn lower_struct_item(ctx: &mut Context, item: ItemStruct) -> Result<(), Error> {
@@ -31,6 +31,7 @@ pub(super) fn lower_struct_item(ctx: &mut Context, item: ItemStruct) -> Result<(
 
     let mut member_tys = Vec::new();
     let mut member_names = Vec::new();
+    let mut member_bindings = Vec::new();
     for field in named.named {
         let fname = field
             .ident
@@ -41,8 +42,19 @@ pub(super) fn lower_struct_item(ctx: &mut Context, item: ItemStruct) -> Result<(
             return Err(Error::DuplicateField(fname));
         }
         let ty = ctx.lower_type(&field.ty)?;
+        let mut binding = super::entry::parse_io_binding(&field.attrs)?;
+        if let Some(binding) = binding.as_mut() {
+            super::entry::apply_default_interpolation(ctx, ty, binding);
+        }
         member_names.push(fname);
         member_tys.push(ty);
+        member_bindings.push(binding);
+    }
+    // A struct is either plain data or a shader interface, never half of each:
+    // Naga rejects a partly bound entry-point struct, with a worse message.
+    let bound = member_bindings.iter().filter(|b| b.is_some()).count();
+    if bound != 0 && bound != member_bindings.len() {
+        return Err(Error::MixedStructBindings(name));
     }
 
     let mut layouter = Layouter::default();
@@ -53,7 +65,11 @@ pub(super) fn lower_struct_item(ctx: &mut Context, item: ItemStruct) -> Result<(
     let mut offset = 0u32;
     let mut struct_align = naga::proc::Alignment::ONE;
     let mut members = Vec::new();
-    for (fname, ty) in member_names.iter().zip(member_tys.iter().copied()) {
+    let fields = member_names
+        .iter()
+        .zip(member_tys.iter().copied())
+        .zip(member_bindings);
+    for ((fname, ty), binding) in fields {
         let layout = layouter[ty];
         offset = layout.alignment.round_up(offset);
         if layout.alignment > struct_align {
@@ -62,7 +78,7 @@ pub(super) fn lower_struct_item(ctx: &mut Context, item: ItemStruct) -> Result<(
         members.push(StructMember {
             name: Some(fname.clone()),
             ty,
-            binding: None,
+            binding,
             offset,
         });
         offset += layout.size;
@@ -86,7 +102,7 @@ pub(super) fn lower_struct_lit(
     body: &mut Block,
     lit: &syn::ExprStruct,
     env: &mut Env,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+) -> Result<Typed, Error> {
     if lit.qself.is_some() || lit.path.segments.len() != 1 {
         return Err(Error::UnsupportedExpr("struct literal".into()));
     }
@@ -111,7 +127,13 @@ pub(super) fn lower_struct_lit(
             syn::Member::Named(ident) => ident.to_string(),
             syn::Member::Unnamed(_) => return Err(Error::UnsupportedExpr("tuple field".into())),
         };
-        let (expr, fty) = lower_expr(ctx, function, body, &field.expr, env)?;
+        // The member's type is known, so an untyped integer literal can follow
+        // it the way it follows a parameter type at a call.
+        let hint = expected
+            .iter()
+            .find(|(n, _)| *n == fname)
+            .and_then(|&(_, ty)| ctx.shape(ty).int_hint());
+        let (expr, fty) = lower_expr_hinted(ctx, function, body, &field.expr, env, hint)?;
         if provided.iter().any(|(n, _, _)| n == &fname) {
             return Err(Error::DuplicateField(fname));
         }
@@ -134,11 +156,7 @@ pub(super) fn lower_struct_lit(
         components.push(found.1);
     }
 
-    let handle = emit(
-        function,
-        body,
-        Expression::Compose { ty, components },
-    )?;
+    let handle = emit(function, body, Expression::Compose { ty, components })?;
     Ok((handle, ty))
 }
 
@@ -149,7 +167,7 @@ pub(super) fn lower_struct_field(
     base: Handle<Expression>,
     base_ty: Handle<Type>,
     member: &str,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+) -> Result<Typed, Error> {
     let members = ctx
         .as_struct(base_ty)
         .ok_or_else(|| Error::UnsupportedExpr("field".into()))?;
@@ -163,10 +181,6 @@ pub(super) fn lower_struct_field(
                 .map(|_| (i as u32, m.ty))
         })
         .ok_or_else(|| Error::UnknownField(member.into()))?;
-    let handle = emit(
-        function,
-        body,
-        Expression::AccessIndex { base, index },
-    )?;
+    let handle = emit(function, body, Expression::AccessIndex { base, index })?;
     Ok((handle, field_ty))
 }

@@ -16,6 +16,8 @@ pub enum Error {
     UnknownIdent(String),
     #[error("function `{0}` has no return type")]
     MissingReturnType(String),
+    #[error("function `{0}` can finish without returning a value")]
+    MissingReturn(String),
     #[error("receiver arguments are not supported")]
     Receiver,
     #[error("pattern parameters are not supported")]
@@ -28,9 +30,15 @@ pub enum Error {
     MissingBlockValue,
     #[error("type mismatch")]
     TypeMismatch,
+    #[error("operator `{0}` does not apply to these operand types")]
+    BadOperandTypes(String),
+    #[error("shift amount must be `u32` and match the left operand's size")]
+    BadShiftType,
+    #[error("unsupported cast to `{0}`")]
+    UnsupportedCast(String),
     #[error("cannot assign to function argument `{0}`")]
     AssignToArgument(String),
-    #[error("assignment target must be a local identifier")]
+    #[error("cannot assign to this expression (a swizzle or call result is not storage)")]
     InvalidAssignTarget,
     #[error("labeled loops are not supported")]
     LoopLabel,
@@ -46,6 +54,8 @@ pub enum Error {
     VecIndexRange,
     #[error("conflicting shader stage attributes")]
     ConflictingStage,
+    #[error("duplicate `#[{0}]` attribute")]
+    DuplicateAttribute(String),
     #[error("unsupported binding `{0}`")]
     UnsupportedBinding(String),
     #[error("entry point argument `{0}` needs #[location] or #[builtin]")]
@@ -56,8 +66,26 @@ pub enum Error {
     UnexpectedWorkgroupSize,
     #[error("entry point `{0}` is missing #[output(...)]")]
     MissingReturnBinding(String),
+    #[error("`{0}` produces no value, so it cannot be used as one")]
+    ValueFromStatement(String),
+    #[error("unexpected address space on `{0}`: a texture or sampler is a handle")]
+    UnexpectedAddressSpace(String),
+    #[error("`{0}` needs something that names storage as its first argument")]
+    NotAPlace(String),
+    #[error("`{0}` needs a `ray_query` as its first argument")]
+    NotARayQuery(String),
+    #[error("`{0}` needs an `acceleration_structure`")]
+    NotAnAccelerationStructure(String),
+    #[error("`{0}` needs an `atomic<T>` as its first argument")]
+    NotAnAtomic(String),
+    #[error("`{0}` is workgroup or private memory, so it takes no binding")]
+    UnexpectedBinding(String),
+    #[error("`{0}` needs a texture as its first argument")]
+    NotATexture(String),
     #[error("unknown function `{0}`")]
     UnknownFunction(String),
+    #[error("duplicate function `{0}`")]
+    DuplicateFunction(String),
     #[error("wrong number of arguments for `{0}`")]
     WrongArgCount(String),
     #[error("unsupported matrix constructor `{0}`")]
@@ -66,10 +94,16 @@ pub enum Error {
     MatCtorArgs,
     #[error("resource `{0}` needs #[group] and #[binding]")]
     MissingResourceBinding(String),
+    #[error("`{0}` is a runtime-sized array, so it needs `#[storage]`")]
+    RuntimeArrayNotStorage(String),
     #[error("duplicate global `{0}`")]
     DuplicateGlobal(String),
-    #[error("cannot assign to read-only global `{0}`")]
+    #[error("cannot write through `{0}`, which is read-only")]
     AssignToReadonly(String),
+    #[error("duplicate const `{0}`")]
+    DuplicateConst(String),
+    #[error("`{0}` is not allowed in a constant")]
+    UnsupportedConstExpr(String),
     #[error("duplicate struct `{0}`")]
     DuplicateStruct(String),
     #[error("unknown struct `{0}`")]
@@ -84,4 +118,10 @@ pub enum Error {
     MissingStructField(String),
     #[error("wrong number of fields for struct `{0}`")]
     StructFieldCount(String),
+    #[error("struct `{0}` mixes bound and unbound fields")]
+    MixedStructBindings(String),
+    #[error("entry point `{0}` returns a struct with field bindings; drop `#[output(...)]`")]
+    RedundantReturnBinding(String),
+    #[error("`#[location]` field `{0}` is an integer, so it needs `#[flat]`")]
+    MissingFlat(String),
 }

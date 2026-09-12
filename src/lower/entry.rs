@@ -1,11 +1,11 @@
 use naga::{
-    Binding, BuiltIn, EntryPoint, Function, FunctionResult, Interpolation, ScalarKind, ShaderStage,
-    TypeInner,
+    Binding, BuiltIn, EntryPoint, Function, FunctionResult, Handle, Interpolation, Sampling,
+    ScalarKind, ShaderStage, Type,
 };
 use syn::{Attribute, FnArg, ItemFn, LitInt, Meta, ReturnType};
 
 use super::env::Env;
-use super::{lower_signature, Context};
+use super::{is_unit, lower_signature, Context};
 use crate::Error;
 
 #[derive(Default)]
@@ -90,14 +90,28 @@ fn parse_binding_meta(attr: &Attribute) -> Result<Binding, Error> {
     }
 }
 
-fn parse_arg_binding(attrs: &[Attribute]) -> Result<Option<Binding>, Error> {
+/// Parse `#[location(N)]` / `#[builtin(name)]`, plus an optional `#[flat]`.
+///
+/// Used for both entry-point arguments and the fields of an I/O struct.
+pub(super) fn parse_io_binding(attrs: &[Attribute]) -> Result<Option<Binding>, Error> {
     let mut found = None;
+    let mut flat = false;
     for attr in attrs {
         if attr.path().is_ident("builtin") || attr.path().is_ident("location") {
             if found.is_some() {
-                return Err(Error::ConflictingStage);
+                return Err(Error::DuplicateAttribute("location/builtin".into()));
             }
             found = Some(parse_plain_binding(attr)?);
+        } else if attr.path().is_ident("flat") {
+            flat = true;
+        }
+    }
+    if flat {
+        match &mut found {
+            Some(Binding::Location { interpolation, .. }) => {
+                *interpolation = Some(Interpolation::Flat)
+            }
+            _ => return Err(Error::UnsupportedBinding("flat".into())),
         }
     }
     Ok(found)
@@ -145,51 +159,89 @@ fn map_builtin(name: &str) -> Result<BuiltIn, Error> {
     })
 }
 
-fn is_unit(ty: &syn::Type) -> bool {
-    matches!(ty, syn::Type::Tuple(t) if t.elems.is_empty())
+/// Only vertex outputs and fragment inputs are interpolated, so only they need
+/// an interpolation mode.
+fn needs_interpolation(stage: ShaderStage, is_input: bool) -> bool {
+    matches!(
+        (stage, is_input),
+        (ShaderStage::Vertex, false) | (ShaderStage::Fragment, true)
+    )
 }
 
-fn fill_interpolation(
-    ctx: &Context,
-    ty: naga::Handle<naga::Type>,
-    stage: ShaderStage,
-    is_input: bool,
-    binding: &mut Binding,
-) {
+/// Give a float `Location` binding the default every shading language shares:
+/// perspective-correct, center-sampled.
+///
+/// Applied to every location binding, not just the interpolated ones, because
+/// that is what Naga's own WGSL frontend does — and because the backend prints
+/// nothing for the default, so it stays invisible where it does not apply.
+/// Integers cannot be interpolated at all, so they are left alone and
+/// `check_interpolation` asks for `#[flat]` where one is required.
+pub(super) fn apply_default_interpolation(ctx: &Context, ty: Handle<Type>, binding: &mut Binding) {
     let Binding::Location {
-        interpolation,
+        interpolation: interpolation @ None,
+        sampling,
         ..
     } = binding
     else {
         return;
     };
-    let needs = matches!(
-        (stage, is_input),
-        (ShaderStage::Vertex, false) | (ShaderStage::Fragment, true)
-    );
-    if !needs || interpolation.is_some() {
-        return;
+    if ctx.shape(ty).scalar().map(|s| s.kind) == Some(ScalarKind::Float) {
+        *interpolation = Some(Interpolation::Perspective);
+        *sampling = Some(Sampling::Center);
     }
-    let integer = match ctx.module.types[ty].inner {
-        TypeInner::Scalar(s) | TypeInner::Vector { scalar: s, .. } => {
-            matches!(s.kind, ScalarKind::Sint | ScalarKind::Uint | ScalarKind::Bool)
-        }
-        _ => false,
-    };
-    *interpolation = Some(if integer {
-        Interpolation::Flat
-    } else {
-        Interpolation::Perspective
-    });
 }
 
-pub(super) fn lower_entry(
-    ctx: &mut Context,
-    item: ItemFn,
-    info: StageInfo,
+/// An integer varying has to say `#[flat]`; nothing else can be meant, but WGSL
+/// still wants it written down.
+fn check_interpolation(
+    binding: &Binding,
+    name: &str,
+    stage: ShaderStage,
+    is_input: bool,
 ) -> Result<(), Error> {
+    if !needs_interpolation(stage, is_input) {
+        return Ok(());
+    }
+    if let Binding::Location {
+        interpolation: None,
+        ..
+    } = binding
+    {
+        return Err(Error::MissingFlat(name.into()));
+    }
+    Ok(())
+}
+
+/// Does this type carry its own per-field bindings, as a vertex-output or
+/// fragment-input struct does?
+fn is_io_struct(ctx: &Context, ty: naga::Handle<naga::Type>) -> bool {
+    match ctx.as_struct(ty) {
+        Some(members) => members.iter().all(|m| m.binding.is_some()),
+        None => false,
+    }
+}
+
+/// Float fields get the default interpolation when the struct is declared;
+/// integers cannot be interpolated at all, so they have to say `#[flat]`.
+fn check_io_struct(
+    ctx: &Context,
+    ty: Handle<Type>,
+    stage: ShaderStage,
+    is_input: bool,
+) -> Result<(), Error> {
+    for member in ctx.as_struct(ty).into_iter().flatten() {
+        if let Some(binding) = &member.binding {
+            let name = member.name.clone().unwrap_or_default();
+            check_interpolation(binding, &name, stage, is_input)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> Result<(), Error> {
     let stage = info.stage.expect("stage present");
     let name = item.sig.ident.to_string();
+    ctx.claim_fn_name(&name)?;
 
     if stage != ShaderStage::Compute && info.workgroup_size.is_some() {
         return Err(Error::UnexpectedWorkgroupSize);
@@ -217,14 +269,26 @@ pub(super) fn lower_entry(
         }
         ReturnType::Type(_, ty) => {
             let result_ty = ctx.lower_type(ty)?;
-            let mut binding = info
-                .return_binding
-                .ok_or_else(|| Error::MissingReturnBinding(name.clone()))?;
-            fill_interpolation(ctx, result_ty, stage, false, &mut binding);
-            Some(FunctionResult {
-                ty: result_ty,
-                binding: Some(binding),
-            })
+            if is_io_struct(ctx, result_ty) {
+                if info.return_binding.is_some() {
+                    return Err(Error::RedundantReturnBinding(name));
+                }
+                check_io_struct(ctx, result_ty, stage, false)?;
+                Some(FunctionResult {
+                    ty: result_ty,
+                    binding: None,
+                })
+            } else {
+                let mut binding = info
+                    .return_binding
+                    .ok_or_else(|| Error::MissingReturnBinding(name.clone()))?;
+                apply_default_interpolation(ctx, result_ty, &mut binding);
+                check_interpolation(&binding, &name, stage, false)?;
+                Some(FunctionResult {
+                    ty: result_ty,
+                    binding: Some(binding),
+                })
+            }
         }
     };
 
@@ -243,22 +307,43 @@ pub(super) fn lower_entry(
         let FnArg::Typed(pat_ty) = fn_arg else {
             return Err(Error::Receiver);
         };
-        let name = arg.name.clone().unwrap_or_default();
-        let mut binding = parse_arg_binding(&pat_ty.attrs)?
-            .ok_or_else(|| Error::MissingArgBinding(name))?;
-        fill_interpolation(ctx, arg.ty, stage, true, &mut binding);
-        arg.binding = Some(binding);
+        match parse_io_binding(&pat_ty.attrs)? {
+            Some(mut binding) => {
+                apply_default_interpolation(ctx, arg.ty, &mut binding);
+                let name = arg.name.clone().unwrap_or_default();
+                check_interpolation(&binding, &name, stage, true)?;
+                arg.binding = Some(binding);
+            }
+            // A struct argument carries its interface on its fields — either
+            // written there, or left for the host to fill in (Blade matches
+            // vertex attributes up by field name). Half-bound structs are
+            // already refused where they are declared.
+            None if ctx.as_struct(arg.ty).is_some() => {
+                if is_io_struct(ctx, arg.ty) {
+                    check_io_struct(ctx, arg.ty, stage, true)?;
+                }
+            }
+            None => {
+                return Err(Error::MissingArgBinding(
+                    arg.name.clone().unwrap_or_default(),
+                ))
+            }
+        }
     }
 
     let mut body = naga::Block::new();
     env.push_scope();
     let tail = super::stmt::lower_block(ctx, &mut function, &mut body, &item.block, &mut env)?;
     env.pop_scope();
-    if let Some((value, _)) = tail {
-        body.push(
+    match tail {
+        Some((value, _)) => body.push(
             naga::Statement::Return { value: Some(value) },
             naga::Span::UNDEFINED,
-        );
+        ),
+        None if function.result.is_some() && !super::stmt::always_jumps(&body) => {
+            return Err(Error::MissingReturn(function.name.unwrap_or_default()))
+        }
+        None => {}
     }
     function.body = body;
 

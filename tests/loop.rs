@@ -1,15 +1,6 @@
-use nagasaki::{parse_str, to_wgsl, validate};
+mod common;
 
-fn roundtrip(src: &str) -> String {
-    let module = parse_str(src).expect("parse");
-    let info = validate(&module).expect("validate");
-    to_wgsl(&module, &info).expect("wgsl")
-}
-
-fn validate_only(src: &str) {
-    let module = parse_str(src).expect(src);
-    validate(&module).expect(src);
-}
+use common::*;
 
 #[test]
 fn while_counts() {
@@ -84,8 +75,7 @@ fn return_inside_loop() {
 
 #[test]
 fn rejects_labeled_loop() {
-    let err = parse_str("fn f(a: i32) -> i32 { 'x: loop { break; } a }").unwrap_err();
-    let msg = err.to_string();
+    let msg = reject("fn f(a: i32) -> i32 { 'x: loop { break; } a }");
     assert!(
         msg.contains("label") || msg.contains("unsupported"),
         "{msg}"
@@ -94,7 +84,6 @@ fn rejects_labeled_loop() {
 
 #[test]
 fn rejects_break_value() {
-    let err = parse_str("fn f(a: i32) -> i32 { loop { break a; } }").unwrap_err();
-    let msg = err.to_string();
+    let msg = reject("fn f(a: i32) -> i32 { loop { break a; } }");
     assert!(msg.contains("break") || msg.contains("value"), "{msg}");
 }

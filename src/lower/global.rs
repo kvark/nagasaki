@@ -13,12 +13,19 @@ pub(crate) struct GlobalInfo {
     pub handle: Handle<GlobalVariable>,
     pub ty: Handle<Type>,
     pub writable: bool,
+    pub space: AddressSpace,
 }
 
 #[derive(Clone, Copy)]
 enum SpaceKind {
     Uniform,
-    Storage { write: bool },
+    Storage {
+        write: bool,
+    },
+    /// Shared across a workgroup, zero-initialised each dispatch.
+    Workgroup,
+    /// Private to each invocation.
+    Private,
 }
 
 struct ResourceInfo {
@@ -29,10 +36,18 @@ struct ResourceInfo {
 
 pub(super) fn bind_globals(ctx: &Context, function: &mut Function, env: &mut Env) {
     for g in &ctx.globals {
-        let pointer = function
+        let expr = function
             .expressions
             .append(Expression::GlobalVariable(g.handle), Span::UNDEFINED);
-        env.push_rw(g.name.clone(), Slot::Ptr(pointer), g.ty, g.writable);
+        // A handle names the resource itself; there is nothing to load from it,
+        // and Naga wants the `GlobalVariable` expression passed straight to the
+        // image builtins.
+        let slot = if super::texture::is_handle(ctx, g.ty) {
+            Slot::Value(expr)
+        } else {
+            Slot::Ptr(expr)
+        };
+        env.push_in(g.name.clone(), slot, g.ty, g.writable, g.space);
     }
 }
 
@@ -65,15 +80,26 @@ fn insert_global(
     attrs: &[Attribute],
 ) -> Result<(), Error> {
     let info = parse_resource_attrs(attrs)?;
-    let group = info
-        .group
-        .ok_or_else(|| Error::MissingResourceBinding(name.clone()))?;
-    let binding = info
-        .binding
-        .ok_or_else(|| Error::MissingResourceBinding(name.clone()))?;
+    // Both or neither: a host that assigns bindings itself (Blade matches
+    // globals up by name at pipeline creation) wants them left unset, but half
+    // a binding is a typo.
+    let binding = match (info.group, info.binding) {
+        (Some(group), Some(binding)) => Some(ResourceBinding { group, binding }),
+        (None, None) => None,
+        _ => return Err(Error::MissingResourceBinding(name.clone())),
+    };
 
     if ctx.globals.iter().any(|g| g.name == name) {
         return Err(Error::DuplicateGlobal(name));
+    }
+
+    // A texture or sampler is a handle, not a buffer: it has no address space
+    // to choose and is never written through an assignment.
+    if super::texture::is_handle(ctx, ty) {
+        if info.space.is_some() {
+            return Err(Error::UnexpectedAddressSpace(name));
+        }
+        return finish_global(ctx, name, ty, AddressSpace::Handle, false, binding);
     }
 
     let (space, writable) = match info.space.unwrap_or(SpaceKind::Uniform) {
@@ -86,13 +112,41 @@ fn insert_global(
             };
             (AddressSpace::Storage { access }, write)
         }
+        SpaceKind::Workgroup => (AddressSpace::WorkGroup, true),
+        SpaceKind::Private => (AddressSpace::Private, true),
     };
 
+    // Only resources are bound; workgroup and private memory belongs to the
+    // shader itself.
+    let binding = match (space, binding) {
+        (AddressSpace::WorkGroup | AddressSpace::Private, Some(_)) => {
+            return Err(Error::UnexpectedBinding(name))
+        }
+        (_, binding) => binding,
+    };
+
+    // WGSL puts runtime-sized arrays in storage only. Naga notices too, but as
+    // an alignment complaint about a stride nobody wrote.
+    if !matches!(space, AddressSpace::Storage { .. }) && has_runtime_array(ctx, ty) {
+        return Err(Error::RuntimeArrayNotStorage(name));
+    }
+
+    finish_global(ctx, name, ty, space, writable, binding)
+}
+
+fn finish_global(
+    ctx: &mut Context,
+    name: String,
+    ty: Handle<Type>,
+    space: AddressSpace,
+    writable: bool,
+    binding: Option<ResourceBinding>,
+) -> Result<(), Error> {
     let handle = ctx.module.global_variables.append(
         GlobalVariable {
             name: Some(name.clone()),
             space,
-            binding: Some(ResourceBinding { group, binding }),
+            binding,
             ty,
             init: None,
             memory_decorations: MemoryDecorations::empty(),
@@ -104,8 +158,20 @@ fn insert_global(
         handle,
         ty,
         writable,
+        space,
     });
     Ok(())
+}
+
+/// Is `ty` a runtime-sized array, or a struct ending in one?
+fn has_runtime_array(ctx: &Context, ty: Handle<Type>) -> bool {
+    if matches!(ctx.as_array(ty), Some((_, naga::ArraySize::Dynamic))) {
+        return true;
+    }
+    match ctx.as_struct(ty).and_then(|members| members.last()) {
+        Some(last) => has_runtime_array(ctx, last.ty),
+        None => false,
+    }
 }
 
 fn parse_resource_attrs(attrs: &[Attribute]) -> Result<ResourceInfo, Error> {
@@ -117,12 +183,12 @@ fn parse_resource_attrs(attrs: &[Attribute]) -> Result<ResourceInfo, Error> {
     for attr in attrs {
         if attr.path().is_ident("group") {
             if info.group.is_some() {
-                return Err(Error::ConflictingStage);
+                return Err(Error::DuplicateAttribute("group".into()));
             }
             info.group = Some(parse_u32_arg(attr, "group")?);
         } else if attr.path().is_ident("binding") {
             if info.binding.is_some() {
-                return Err(Error::ConflictingStage);
+                return Err(Error::DuplicateAttribute("binding".into()));
             }
             info.binding = Some(parse_u32_arg(attr, "binding")?);
         } else if attr.path().is_ident("uniform") {
@@ -130,6 +196,10 @@ fn parse_resource_attrs(attrs: &[Attribute]) -> Result<ResourceInfo, Error> {
         } else if attr.path().is_ident("storage") {
             let write = parse_storage_write(attr)?;
             set_space(&mut info.space, SpaceKind::Storage { write })?;
+        } else if attr.path().is_ident("workgroup") {
+            set_space(&mut info.space, SpaceKind::Workgroup)?;
+        } else if attr.path().is_ident("private") {
+            set_space(&mut info.space, SpaceKind::Private)?;
         }
     }
     Ok(info)
@@ -137,7 +207,7 @@ fn parse_resource_attrs(attrs: &[Attribute]) -> Result<ResourceInfo, Error> {
 
 fn set_space(slot: &mut Option<SpaceKind>, space: SpaceKind) -> Result<(), Error> {
     if slot.is_some() {
-        return Err(Error::ConflictingStage);
+        return Err(Error::DuplicateAttribute("address space".into()));
     }
     *slot = Some(space);
     Ok(())

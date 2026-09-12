@@ -1,30 +1,81 @@
+use core::num::NonZeroU32;
+
 use naga::{
-    Block, Function, FunctionArgument, FunctionResult, Handle, Module, Scalar, Span, Statement,
-    Type, TypeInner, VectorSize,
+    AddressSpace, ArraySize, Block, Expression, Function, FunctionArgument, FunctionResult, Handle,
+    Module, Scalar, ScalarKind, Span, Statement, Type, TypeInner, VectorSize,
 };
 use syn::{FnArg, Item, ItemFn, ReturnType, Signature};
 
 use crate::Error;
 
 mod call;
+mod constant;
 mod emit;
 mod entry;
 mod env;
 mod expr;
 mod global;
 mod matrix;
+mod place;
+mod ray;
 mod stmt;
 mod structure;
+mod texture;
 mod vector;
 
 use emit::item_kind;
 use env::{Env, Slot};
-use stmt::lower_block;
+use stmt::{always_jumps, lower_block};
+
+/// A lowered expression and the type it evaluates to. Every `lower_*` that
+/// produces a value hands back one of these.
+pub(super) type Typed = (Handle<Expression>, Handle<Type>);
+
+/// Coarse shape of a type, as far as operators and constructors care.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Shape {
+    Scalar(Scalar),
+    Vector(VectorSize, Scalar),
+    /// Columns, rows, component scalar.
+    Matrix(VectorSize, VectorSize, Scalar),
+    /// Structs and anything else without component-wise operators.
+    Other,
+}
+
+impl Shape {
+    /// Component scalar of a scalar, vector, or matrix.
+    pub(super) fn scalar(self) -> Option<Scalar> {
+        match self {
+            Shape::Scalar(s) | Shape::Vector(_, s) | Shape::Matrix(_, _, s) => Some(s),
+            Shape::Other => None,
+        }
+    }
+
+    /// Component kind of a scalar or vector. Matrices are excluded because Naga
+    /// treats them separately in every operator rule that uses this.
+    pub(super) fn elem_kind(self) -> Option<ScalarKind> {
+        match self {
+            Shape::Scalar(s) | Shape::Vector(_, s) => Some(s.kind),
+            Shape::Matrix(..) | Shape::Other => None,
+        }
+    }
+
+    /// The scalar an untyped integer literal should take on in this context,
+    /// mirroring Rust's integer literal inference. Floats are excluded: Rust
+    /// would not turn `1` into `1.0` either.
+    pub(super) fn int_hint(self) -> Option<Scalar> {
+        match self.scalar() {
+            Some(s) if matches!(s.kind, ScalarKind::Sint | ScalarKind::Uint) => Some(s),
+            _ => None,
+        }
+    }
+}
 
 pub struct Context {
     pub module: Module,
     pub(super) globals: Vec<global::GlobalInfo>,
     pub(super) structs: Vec<(String, Handle<Type>)>,
+    pub(super) consts: Vec<constant::ConstInfo>,
 }
 
 impl Context {
@@ -33,6 +84,7 @@ impl Context {
             module: Module::default(),
             globals: Vec::new(),
             structs: Vec::new(),
+            consts: Vec::new(),
         }
     }
 
@@ -45,10 +97,19 @@ impl Context {
                 Item::Static(st) => global::lower_static(self, st)?,
                 Item::ForeignMod(fm) => global::lower_foreign_mod(self, fm)?,
                 Item::Struct(st) => structure::lower_struct_item(self, st)?,
+                Item::Const(c) => constant::lower_const_item(self, c)?,
                 other => return Err(Error::UnsupportedItem(item_kind(&other))),
             }
         }
         Ok(())
+    }
+
+    /// Intern a type that has no component structure of its own: an image or
+    /// a sampler.
+    pub(super) fn intern_handle_type(&mut self, inner: TypeInner) -> Handle<Type> {
+        self.module
+            .types
+            .insert(Type { name: None, inner }, Span::UNDEFINED)
     }
 
     pub(super) fn intern_scalar(&mut self, scalar: Scalar) -> Handle<Type> {
@@ -69,6 +130,28 @@ impl Context {
             },
             Span::UNDEFINED,
         )
+    }
+
+    pub(super) fn shape(&self, ty: Handle<Type>) -> Shape {
+        match self.module.types[ty].inner {
+            TypeInner::Scalar(scalar) => Shape::Scalar(scalar),
+            TypeInner::Vector { size, scalar } => Shape::Vector(size, scalar),
+            TypeInner::Matrix {
+                columns,
+                rows,
+                scalar,
+            } => Shape::Matrix(columns, rows, scalar),
+            _ => Shape::Other,
+        }
+    }
+
+    /// `bool` for a scalar operand, `vecN<bool>` for a vector one: the result
+    /// type of a comparison.
+    pub(super) fn bool_like(&mut self, ty: Handle<Type>) -> Handle<Type> {
+        match self.shape(ty) {
+            Shape::Vector(size, _) => self.intern_vector(size, Scalar::BOOL),
+            _ => self.intern_scalar(Scalar::BOOL),
+        }
     }
 
     pub(super) fn as_scalar(&self, ty: Handle<Type>) -> Option<Scalar> {
@@ -118,6 +201,29 @@ impl Context {
     pub(super) fn lower_type(&mut self, ty: &syn::Type) -> Result<Handle<Type>, Error> {
         let path = match ty {
             syn::Type::Path(path) if path.qself.is_none() => path,
+            // `[T]` is a runtime-sized array: what a storage buffer holds.
+            syn::Type::Slice(slice) => {
+                let base = self.lower_type(&slice.elem)?;
+                return self.intern_array(base, ArraySize::Dynamic);
+            }
+            // `[T; N]` is a fixed array.
+            syn::Type::Array(array) => {
+                let base = self.lower_type(&array.elem)?;
+                let len = self.array_len(&array.len)?;
+                return self.intern_array(base, ArraySize::Constant(len));
+            }
+            syn::Type::Paren(inner) => return self.lower_type(&inner.elem),
+            // `&mut T` is WGSL's `ptr<function, T>`: an out-parameter.
+            syn::Type::Reference(reference) => {
+                if reference.lifetime.is_some() {
+                    return Err(Error::UnsupportedType("lifetime".into()));
+                }
+                let base = self.lower_type(&reference.elem)?;
+                return Ok(self.intern_handle_type(TypeInner::Pointer {
+                    base,
+                    space: AddressSpace::Function,
+                }));
+            }
             _ => return Err(Error::UnsupportedType("non-path type".into())),
         };
         if path.path.segments.len() != 1 {
@@ -125,6 +231,35 @@ impl Context {
         }
         let seg = &path.path.segments[0];
         let name = seg.ident.to_string();
+
+        // Textures and samplers take their own argument shapes —
+        // `texture_storage_2d<Format, Access>` has two — so they are resolved
+        // before the one-argument rule below.
+        if name == "binding_array" {
+            // The optional count is a const argument, so the element type is
+            // picked out rather than taken as the only argument.
+            let args = type_args_only(seg);
+            let [base] = args[..] else {
+                return Err(Error::UnsupportedType("binding_array".into()));
+            };
+            let base = self.lower_type(base)?;
+            let size = match binding_array_len(seg)? {
+                Some(len) => ArraySize::Constant(len),
+                None => ArraySize::Dynamic,
+            };
+            return Ok(self.intern_handle_type(TypeInner::BindingArray { base, size }));
+        }
+
+        if let Some(result) = texture::parse_handle_type(self, &name, &collect_type_args(seg)?) {
+            return result;
+        }
+        if let Some(ty) = ray::parse_ray_type(self, &name) {
+            return Ok(ty);
+        }
+        if let Some(ty) = ray::special_struct(self, &name) {
+            return Ok(ty);
+        }
+
         let type_arg = match &seg.arguments {
             syn::PathArguments::None => None,
             syn::PathArguments::AngleBracketed(args) if args.args.len() == 1 => {
@@ -135,6 +270,16 @@ impl Context {
             }
             _ => return Err(Error::UnsupportedType(name)),
         };
+
+        // `binding_array<T>` is a bound array of resources: a texture array in
+        // a descriptor set, not memory.
+        if name == "atomic" {
+            let scalar = match type_arg {
+                Some(inner) => lower_scalar_ident(inner)?,
+                None => return Err(Error::UnsupportedType("atomic".into())),
+            };
+            return Ok(self.intern_handle_type(TypeInner::Atomic(scalar)));
+        }
 
         if let Some((size, shorthand)) = parse_vec_ident(&name) {
             let scalar = match (shorthand, type_arg) {
@@ -170,12 +315,100 @@ impl Context {
         }
     }
 
-    pub(super) fn struct_by_name(&self, name: &str) -> Option<Handle<Type>> {
-        self.structs
+    /// Functions and entry points share one namespace, as they do in WGSL.
+    /// Without this, two `fn f` end up as `f` and `f_1` in the output and calls
+    /// silently pick the first.
+    pub(super) fn claim_fn_name(&self, name: &str) -> Result<(), Error> {
+        let taken = self
+            .module
+            .functions
+            .iter()
+            .any(|(_, f)| f.name.as_deref() == Some(name))
+            || self.module.entry_points.iter().any(|e| e.name == name);
+        if taken {
+            return Err(Error::DuplicateFunction(name.into()));
+        }
+        Ok(())
+    }
+
+    /// An array length: a literal, or a `const` naming one.
+    fn array_len(&self, len: &syn::Expr) -> Result<NonZeroU32, Error> {
+        let value = match len {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(int),
+                ..
+            }) => int.base10_parse::<u32>().map_err(Error::from)?,
+            syn::Expr::Path(path) => {
+                let name = path
+                    .path
+                    .get_ident()
+                    .ok_or_else(|| Error::UnsupportedType("array length".into()))?
+                    .to_string();
+                let info = self
+                    .consts
+                    .iter()
+                    .find(|c| c.name == name)
+                    .ok_or(Error::UnknownIdent(name))?;
+                match self.module.global_expressions[info.init_expr] {
+                    naga::Expression::Literal(naga::Literal::U32(v)) => v,
+                    naga::Expression::Literal(naga::Literal::I32(v)) if v >= 0 => v as u32,
+                    _ => return Err(Error::UnsupportedType("array length".into())),
+                }
+            }
+            _ => return Err(Error::UnsupportedType("array length".into())),
+        };
+        NonZeroU32::new(value).ok_or_else(|| Error::UnsupportedType("zero-length array".into()))
+    }
+
+    pub(super) fn struct_by_name(&mut self, name: &str) -> Option<Handle<Type>> {
+        let declared = self
+            .structs
             .iter()
             .rev()
             .find(|(n, _)| n == name)
-            .map(|(_, h)| *h)
+            .map(|(_, h)| *h);
+        // `RayDesc` and `RayIntersection` are Naga's, generated on first use.
+        declared.or_else(|| ray::special_struct(self, name))
+    }
+
+    /// What `ty` points at, if it is a pointer.
+    pub(super) fn pointee(&self, ty: Handle<Type>) -> Option<Handle<Type>> {
+        match self.module.types[ty].inner {
+            TypeInner::Pointer { base, .. } => Some(base),
+            _ => None,
+        }
+    }
+
+    pub(super) fn as_array(&self, ty: Handle<Type>) -> Option<(Handle<Type>, ArraySize)> {
+        match self.module.types[ty].inner {
+            TypeInner::Array { base, size, .. } => Some((base, size)),
+            _ => None,
+        }
+    }
+
+    /// Byte distance between consecutive elements of `base`, which Naga needs
+    /// baked into the array type.
+    pub(super) fn stride_of(&self, base: Handle<Type>) -> Result<u32, Error> {
+        let mut layouter = naga::proc::Layouter::default();
+        layouter
+            .update(self.module.to_ctx())
+            .map_err(|e| Error::UnsupportedType(e.to_string()))?;
+        Ok(layouter[base].to_stride())
+    }
+
+    pub(super) fn intern_array(
+        &mut self,
+        base: Handle<Type>,
+        size: ArraySize,
+    ) -> Result<Handle<Type>, Error> {
+        let stride = self.stride_of(base)?;
+        Ok(self.module.types.insert(
+            Type {
+                name: None,
+                inner: TypeInner::Array { base, size, stride },
+            },
+            Span::UNDEFINED,
+        ))
     }
 
     pub(super) fn as_struct(&self, ty: Handle<Type>) -> Option<&[naga::StructMember]> {
@@ -210,18 +443,22 @@ impl Context {
         }
 
         let name = item.sig.ident.to_string();
-        let result_ty = match &item.sig.output {
-            ReturnType::Type(_, ty) => self.lower_type(ty)?,
-            ReturnType::Default => return Err(Error::MissingReturnType(name)),
+        self.claim_fn_name(&name)?;
+        // A function with no return type produces nothing, as in Rust; calls to
+        // it are statements.
+        let result = match &item.sig.output {
+            ReturnType::Type(_, ty) if is_unit(ty) => None,
+            ReturnType::Type(_, ty) => Some(FunctionResult {
+                ty: self.lower_type(ty)?,
+                binding: None,
+            }),
+            ReturnType::Default => None,
         };
 
         let mut function = Function {
             name: Some(name),
             arguments: Vec::new(),
-            result: Some(FunctionResult {
-                ty: result_ty,
-                binding: None,
-            }),
+            result,
             ..Default::default()
         };
 
@@ -232,8 +469,14 @@ impl Context {
         env.push_scope();
         let tail = lower_block(self, &mut function, &mut body, &item.block, &mut env)?;
         env.pop_scope();
-        if let Some((value, _)) = tail {
-            body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
+        match tail {
+            Some((value, _)) => {
+                body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED)
+            }
+            None if function.result.is_some() && !always_jumps(&body) => {
+                return Err(Error::MissingReturn(function.name.unwrap_or_default()))
+            }
+            None => {}
         }
         function.body = body;
         self.module.functions.append(function, Span::UNDEFINED);
@@ -302,6 +545,55 @@ pub(super) fn parse_mat_ident(name: &str) -> Option<(VectorSize, VectorSize, Opt
     }
 }
 
+/// The type arguments of `seg`, ignoring any const ones.
+fn type_args_only(seg: &syn::PathSegment) -> Vec<&syn::Type> {
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return Vec::new();
+    };
+    args.args
+        .iter()
+        .filter_map(|arg| match arg {
+            syn::GenericArgument::Type(ty) => Some(ty),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The count in `binding_array<T, N>`, which `syn` parses as a const argument.
+fn binding_array_len(seg: &syn::PathSegment) -> Result<Option<NonZeroU32>, Error> {
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return Ok(None);
+    };
+    for arg in &args.args {
+        let value = match arg {
+            syn::GenericArgument::Const(syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(int),
+                ..
+            })) => int.base10_parse::<u32>().map_err(Error::from)?,
+            syn::GenericArgument::Type(_) => continue,
+            _ => return Err(Error::UnsupportedType("binding_array".into())),
+        };
+        return NonZeroU32::new(value)
+            .map(Some)
+            .ok_or_else(|| Error::UnsupportedType("zero-length binding_array".into()));
+    }
+    Ok(None)
+}
+
+/// Every angle-bracketed type argument of `seg`, in order.
+fn collect_type_args(seg: &syn::PathSegment) -> Result<Vec<&syn::Type>, Error> {
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return Ok(Vec::new());
+    };
+    args.args
+        .iter()
+        .map(|arg| match arg {
+            syn::GenericArgument::Type(ty) => Ok(ty),
+            _ => Err(Error::UnsupportedType(seg.ident.to_string())),
+        })
+        .collect()
+}
+
 fn lower_scalar_ident(ty: &syn::Type) -> Result<Scalar, Error> {
     let ident = match ty {
         syn::Type::Path(path) if path.qself.is_none() => path
@@ -317,6 +609,11 @@ fn lower_scalar_ident(ty: &syn::Type) -> Result<Scalar, Error> {
         "bool" => Ok(Scalar::BOOL),
         other => Err(Error::UnsupportedType(other.into())),
     }
+}
+
+/// Is this the unit type, `()`?
+pub(super) fn is_unit(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Tuple(t) if t.elems.is_empty())
 }
 
 pub(super) fn lower_signature(
@@ -346,8 +643,26 @@ pub(super) fn lower_signature(
                 });
                 let expr = function
                     .expressions
-                    .append(naga::Expression::FunctionArgument(index), Span::UNDEFINED);
-                env.push(name, Slot::Value(expr), ty);
+                    .append(Expression::FunctionArgument(index), Span::UNDEFINED);
+                // A pointer parameter names storage the caller owns, so it
+                // binds as a place: `r.field = x` writes through it, and `&T`
+                // marks the write as not allowed.
+                match ctx.pointee(ty) {
+                    Some(base) => {
+                        let writable = matches!(
+                            &*pat_ty.ty,
+                            syn::Type::Reference(r) if r.mutability.is_some()
+                        );
+                        env.push_in(
+                            name,
+                            Slot::Ptr(expr),
+                            base,
+                            writable,
+                            AddressSpace::Function,
+                        );
+                    }
+                    None => env.push(name, Slot::Value(expr), ty),
+                }
             }
         }
     }

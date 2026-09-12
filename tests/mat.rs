@@ -1,15 +1,6 @@
-use nagasaki::{parse_str, to_wgsl, validate};
+mod common;
 
-fn roundtrip(src: &str) -> String {
-    let module = parse_str(src).expect("parse");
-    let info = validate(&module).expect("validate");
-    to_wgsl(&module, &info).expect("wgsl")
-}
-
-fn validate_only(src: &str) {
-    let module = parse_str(src).expect(src);
-    validate(&module).expect(src);
-}
+use common::*;
 
 #[test]
 fn mat4_from_columns() {
@@ -98,8 +89,7 @@ fn transform_point() {
 
 #[test]
 fn rejects_ctor_arity() {
-    let err = parse_str("fn f(a: vec4) -> mat4 { mat4(a, a) }").unwrap_err();
-    let msg = err.to_string();
+    let msg = reject("fn f(a: vec4) -> mat4 { mat4(a, a) }");
     assert!(
         msg.contains("component") || msg.contains("constructor"),
         "{msg}"
