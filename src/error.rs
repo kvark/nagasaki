@@ -66,6 +66,12 @@ pub enum Error {
     UnexpectedWorkgroupSize,
     #[error("entry point `{0}` is missing #[output(...)]")]
     MissingReturnBinding(String),
+    #[error("`{0}` writes rather than produces a value, so it cannot be used as one")]
+    ValueFromStatement(String),
+    #[error("unexpected address space on `{0}`: a texture or sampler is a handle")]
+    UnexpectedAddressSpace(String),
+    #[error("`{0}` needs a texture as its first argument")]
+    NotATexture(String),
     #[error("unknown function `{0}`")]
     UnknownFunction(String),
     #[error("duplicate function `{0}`")]

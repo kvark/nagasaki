@@ -7,9 +7,23 @@ use super::expr::{lower_expr, lower_expr_hinted};
 use super::matrix::lower_mat_ctor;
 use super::parse_mat_ident;
 use super::parse_vec_ident;
+use super::texture;
 use super::vector::lower_vec_ctor;
 use super::{Context, Shape, Typed};
 use crate::Error;
+
+/// The name and kind of a texture builtin that writes instead of producing.
+pub(super) fn statement_builtin(call: &syn::ExprCall) -> Option<(String, texture::TextureOp)> {
+    let Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    let name = path.path.segments[0].ident.to_string();
+    let op = texture::texture_builtin(&name)?;
+    op.is_statement().then_some((name, op))
+}
 
 pub(super) fn lower_call(
     ctx: &mut Context,
@@ -41,6 +55,12 @@ pub(super) fn lower_call(
     if !declared {
         if name == "select" {
             return lower_select(ctx, function, body, call, env);
+        }
+        if let Some(op) = texture::texture_builtin(&name) {
+            if op.is_statement() {
+                return Err(Error::ValueFromStatement(name));
+            }
+            return texture::lower_texture_call(ctx, function, body, call, env, &name, op);
         }
         if let Some(spec) = math_spec(&name) {
             return lower_math(ctx, function, body, call, env, &name, spec);
