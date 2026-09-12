@@ -16,23 +16,27 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - components: `.x`/`.y`/`.z`/`.w`, swizzle `.xy`/`.zyx`, index `v[0]` / `v[i]` / `m[0]`
 - literals, unary `-`/`!`, arithmetic / compare / bitwise / shift ops (scalar splat on mix)
 - casts: `a as f32`, `v as vec3<u32>` (same width, component-wise)
-- `let` / `let x: T = …` (runtime Store + Load; no const init)
+- `let` / `let x: T = …`, and `let x: T;` assigned later (WGSL's bare `var x: T;`)
 - `if` / `else` / `else if` as statement or value
 - `x = e` and compound `+=`/`-=`/`*=`/`/=`/… on locals
-- `loop` / `while` / `break` / `continue`
+- `loop` / `while` / `for x in a..b` / `a..=b` / `break` / `continue`
 - implicit tail expressions and `return`
 - entry points: `#[vertex]` / `#[fragment]` / `#[compute]` + `#[workgroup_size(x,y,z)]`
 - bindings: `#[location(N)]`, `#[builtin(name)]` on args; `#[output(builtin(..))]` / `#[output(location(N))]` on the fn
+- `select(reject, accept, condition)`, in WGSL's argument order
 - calls to earlier free functions
+- `const NAME: T = …` at module level (literals and vector/matrix constructors)
 - math builtins: `dot`, `cross`, `normalize`, `length`, `distance`, `abs`, `min`, `max`, `clamp`, `mix`, `sin`, `cos`, `transpose`, `determinant`, …
-- globals: `#[group(N)] #[binding(M)] static x: T = ();` (init ignored) or `extern { static x: T; }`
+- globals: `#[group(N)] #[binding(M)] static x: T = ();` (init ignored) or `extern { static x: T; }`;
+  both attributes may be dropped for a host that assigns bindings itself — see [`validate_unbound`](#host-assigned-bindings)
 - address spaces: uniform (default / `#[uniform]`), `#[storage]` (read), `#[storage(read_write)]`
 - structs: `struct S { a: vec3, b: f32 }`, literals `S { a, b: x }`, field access `s.a`
 - I/O structs: `#[location]` / `#[builtin]` on struct fields, for vertex outputs,
   fragment inputs, and multiple render targets
 
-Not yet: labeled loops, `break` values, `for`, component stores (`v.x =` / `s.a =`),
-forward calls, methods, generics, arrays, textures and samplers, `void` functions.
+Not yet: labeled loops, `break` values, component stores (`v.x =` / `s.a =`),
+forward calls, methods, generics, arrays, textures and samplers, `void` functions,
+`const` arithmetic (Naga wants constants already folded).
 Assignment to function arguments is rejected. Vector compare yields a `vecN<bool>`.
 
 ### Typing
@@ -50,6 +54,23 @@ A function with a return type has to return on every path; `if c { a }` as a
 whole body is rejected rather than quietly falling off the end.
 
 A function you declare shadows a math builtin of the same name.
+
+### Host-assigned bindings
+
+Some engines leave `@group`/`@binding` out of the shader and fill them in at
+pipeline creation, matching globals up by name — [Blade][blade] does, and
+asserts the module has none. Drop both attributes for that, and validate with
+`validate_unbound`, which is `validate` minus `ValidationFlags::BINDINGS`:
+
+```rust
+let module = nagasaki::parse_str(src)?;
+let info = nagasaki::validate_unbound(&module)?;
+```
+
+Blade takes a `naga::Module` directly (`ShaderDesc::naga_module`), so a module
+built here needs no WGSL round trip to reach it.
+
+[blade]: https://github.com/kvark/blade
 
 ### Interpolation
 

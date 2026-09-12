@@ -3,12 +3,12 @@ use syn::Expr;
 
 use super::emit::emit;
 use super::env::Env;
-use super::expr::lower_expr_hinted;
+use super::expr::{lower_expr, lower_expr_hinted};
 use super::matrix::lower_mat_ctor;
 use super::parse_mat_ident;
 use super::parse_vec_ident;
 use super::vector::lower_vec_ctor;
-use super::{Context, Typed};
+use super::{Context, Shape, Typed};
 use crate::Error;
 
 pub(super) fn lower_call(
@@ -39,11 +39,57 @@ pub(super) fn lower_call(
         .iter()
         .any(|(_, f)| f.name.as_deref() == Some(name.as_str()));
     if !declared {
+        if name == "select" {
+            return lower_select(ctx, function, body, call, env);
+        }
         if let Some(spec) = math_spec(&name) {
             return lower_math(ctx, function, body, call, env, &name, spec);
         }
     }
     lower_fn_call(ctx, function, body, call, env, &name)
+}
+
+/// `select(reject, accept, condition)`, in WGSL's argument order: the value
+/// picked when the condition holds comes second.
+fn lower_select(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    call: &syn::ExprCall,
+    env: &mut Env,
+) -> Result<Typed, Error> {
+    if call.args.len() != 3 {
+        return Err(Error::WrongArgCount("select".into()));
+    }
+    let (reject, ty) = lower_expr_hinted(ctx, function, body, &call.args[0], env, None)?;
+    let hint = ctx.shape(ty).int_hint();
+    let (accept, accept_ty) = lower_expr_hinted(ctx, function, body, &call.args[1], env, hint)?;
+    if accept_ty != ty {
+        return Err(Error::TypeMismatch);
+    }
+    let (condition, cond_ty) = lower_expr(ctx, function, body, &call.args[2], env)?;
+    // A scalar condition picks one whole value; a vector one picks per lane, so
+    // it has to line up with the operands.
+    let ok = match (ctx.shape(cond_ty), ctx.shape(ty)) {
+        (Shape::Scalar(s), _) => s == naga::Scalar::BOOL,
+        (Shape::Vector(size, s), Shape::Vector(operand, _)) => {
+            s == naga::Scalar::BOOL && size == operand
+        }
+        _ => false,
+    };
+    if !ok {
+        return Err(Error::TypeMismatch);
+    }
+    let handle = emit(
+        function,
+        body,
+        Expression::Select {
+            condition,
+            accept,
+            reject,
+        },
+    )?;
+    Ok((handle, ty))
 }
 
 struct MathSpec {

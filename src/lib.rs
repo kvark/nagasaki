@@ -34,11 +34,29 @@ pub fn parse_str(source: &str) -> Result<naga::Module, Error> {
 pub fn validate(
     module: &naga::Module,
 ) -> Result<naga::valid::ModuleInfo, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(naga::valid::Validator::new(
-        naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::empty(),
+    validate_with(module, naga::valid::ValidationFlags::all())
+}
+
+/// Validate a module whose resource bindings the host assigns.
+///
+/// Some engines — Blade among them — leave `@group`/`@binding` out of the
+/// shader and fill them in at pipeline creation, matching globals up by name.
+/// A module for one of those has globals with no binding, which the default
+/// flags reject.
+pub fn validate_unbound(
+    module: &naga::Module,
+) -> Result<naga::valid::ModuleInfo, Box<dyn std::error::Error + Send + Sync>> {
+    validate_with(
+        module,
+        naga::valid::ValidationFlags::all() ^ naga::valid::ValidationFlags::BINDINGS,
     )
-    .validate(module)?)
+}
+
+fn validate_with(
+    module: &naga::Module,
+    flags: naga::valid::ValidationFlags,
+) -> Result<naga::valid::ModuleInfo, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(naga::valid::Validator::new(flags, naga::valid::Capabilities::empty()).validate(module)?)
 }
 
 /// Emit WGSL for a validated module.

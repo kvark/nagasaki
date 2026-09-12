@@ -65,12 +65,14 @@ fn insert_global(
     attrs: &[Attribute],
 ) -> Result<(), Error> {
     let info = parse_resource_attrs(attrs)?;
-    let group = info
-        .group
-        .ok_or_else(|| Error::MissingResourceBinding(name.clone()))?;
-    let binding = info
-        .binding
-        .ok_or_else(|| Error::MissingResourceBinding(name.clone()))?;
+    // Both or neither: a host that assigns bindings itself (Blade matches
+    // globals up by name at pipeline creation) wants them left unset, but half
+    // a binding is a typo.
+    let binding = match (info.group, info.binding) {
+        (Some(group), Some(binding)) => Some(ResourceBinding { group, binding }),
+        (None, None) => None,
+        _ => return Err(Error::MissingResourceBinding(name.clone())),
+    };
 
     if ctx.globals.iter().any(|g| g.name == name) {
         return Err(Error::DuplicateGlobal(name));
@@ -92,7 +94,7 @@ fn insert_global(
         GlobalVariable {
             name: Some(name.clone()),
             space,
-            binding: Some(ResourceBinding { group, binding }),
+            binding,
             ty,
             init: None,
             memory_decorations: MemoryDecorations::empty(),

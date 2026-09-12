@@ -7,6 +7,7 @@ use syn::{FnArg, Item, ItemFn, ReturnType, Signature};
 use crate::Error;
 
 mod call;
+mod constant;
 mod emit;
 mod entry;
 mod env;
@@ -69,6 +70,7 @@ pub struct Context {
     pub module: Module,
     pub(super) globals: Vec<global::GlobalInfo>,
     pub(super) structs: Vec<(String, Handle<Type>)>,
+    pub(super) consts: Vec<constant::ConstInfo>,
 }
 
 impl Context {
@@ -77,6 +79,7 @@ impl Context {
             module: Module::default(),
             globals: Vec::new(),
             structs: Vec::new(),
+            consts: Vec::new(),
         }
     }
 
@@ -89,6 +92,7 @@ impl Context {
                 Item::Static(st) => global::lower_static(self, st)?,
                 Item::ForeignMod(fm) => global::lower_foreign_mod(self, fm)?,
                 Item::Struct(st) => structure::lower_struct_item(self, st)?,
+                Item::Const(c) => constant::lower_const_item(self, c)?,
                 other => return Err(Error::UnsupportedItem(item_kind(&other))),
             }
         }

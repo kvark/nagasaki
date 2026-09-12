@@ -82,6 +82,10 @@ pub enum Error {
     DuplicateGlobal(String),
     #[error("cannot assign to read-only global `{0}`")]
     AssignToReadonly(String),
+    #[error("duplicate const `{0}`")]
+    DuplicateConst(String),
+    #[error("`{0}` is not allowed in a constant")]
+    UnsupportedConstExpr(String),
     #[error("duplicate struct `{0}`")]
     DuplicateStruct(String),
     #[error("unknown struct `{0}`")]
