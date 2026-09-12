@@ -3,10 +3,16 @@
 //! v0 dialect: free functions, scalars (`f32` / `u32` / `i32` / `bool`),
 //! vectors (`vec2`/`vec3`/`vec4` and `vecN<T>`),
 //! matrices (`mat2`/`mat3`/`mat4` and `matCxR`), literals, unary/binary operators,
-//! `let`, assignment, `if`/`else`, `loop`/`while`, `return`, and
+//! `as` casts, `let`, assignment, `if`/`else`, `loop`/`while`, `return`, and
 //! `#[vertex]`/`#[fragment]`/`#[compute]` entry points,
-//! `#[group]`/`#[binding]` globals, and named structs.
+//! `#[group]`/`#[binding]` globals, and named structs — including structs that
+//! carry `#[location]` / `#[builtin]` bindings on their fields, as vertex
+//! outputs and fragment inputs do.
 //! No references, methods, or generics yet.
+//!
+//! Operand typing mirrors Naga's own rules, so anything [`parse_str`] accepts
+//! is a module [`validate`] accepts; untyped integer literals take their type
+//! from context, as Rust's inference would.
 
 mod error;
 mod lower;

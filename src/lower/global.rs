@@ -117,12 +117,12 @@ fn parse_resource_attrs(attrs: &[Attribute]) -> Result<ResourceInfo, Error> {
     for attr in attrs {
         if attr.path().is_ident("group") {
             if info.group.is_some() {
-                return Err(Error::ConflictingStage);
+                return Err(Error::DuplicateAttribute("group".into()));
             }
             info.group = Some(parse_u32_arg(attr, "group")?);
         } else if attr.path().is_ident("binding") {
             if info.binding.is_some() {
-                return Err(Error::ConflictingStage);
+                return Err(Error::DuplicateAttribute("binding".into()));
             }
             info.binding = Some(parse_u32_arg(attr, "binding")?);
         } else if attr.path().is_ident("uniform") {
@@ -137,7 +137,7 @@ fn parse_resource_attrs(attrs: &[Attribute]) -> Result<ResourceInfo, Error> {
 
 fn set_space(slot: &mut Option<SpaceKind>, space: SpaceKind) -> Result<(), Error> {
     if slot.is_some() {
-        return Err(Error::ConflictingStage);
+        return Err(Error::DuplicateAttribute("address space".into()));
     }
     *slot = Some(space);
     Ok(())

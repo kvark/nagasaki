@@ -41,16 +41,32 @@ pub(super) fn item_kind(item: &syn::Item) -> String {
 pub(super) fn expr_kind(expr: &syn::Expr) -> String {
     use syn::Expr;
     match expr {
+        Expr::Array(_) => "array literal",
         Expr::Assign(_) => "assignment",
+        Expr::Async(_) => "async block",
+        Expr::Await(_) => "await",
         Expr::Call(_) => "call",
+        Expr::Cast(_) => "cast",
+        Expr::Closure(_) => "closure",
+        Expr::Const(_) => "const block",
         Expr::Field(_) => "field",
+        Expr::ForLoop(_) => "`for` loop",
         Expr::If(_) => "if",
         Expr::Index(_) => "index",
+        Expr::Let(_) => "`let` guard",
         Expr::Loop(_) => "loop",
+        Expr::Macro(_) => "macro",
+        Expr::Match(_) => "match",
         Expr::MethodCall(_) => "method",
+        Expr::Range(_) => "range",
         Expr::Reference(_) => "reference",
+        Expr::Repeat(_) => "array repeat",
         Expr::Struct(_) => "struct literal",
+        Expr::Try(_) => "`?`",
+        Expr::Tuple(_) => "tuple",
+        Expr::Unsafe(_) => "unsafe block",
         Expr::While(_) => "while",
+        Expr::Yield(_) => "yield",
         _ => "expression",
     }
     .into()

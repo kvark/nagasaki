@@ -1,6 +1,6 @@
 use naga::{
-    Block, Function, FunctionArgument, FunctionResult, Handle, Module, Scalar, Span, Statement,
-    Type, TypeInner, VectorSize,
+    Block, Expression, Function, FunctionArgument, FunctionResult, Handle, Module, Scalar,
+    ScalarKind, Span, Statement, Type, TypeInner, VectorSize,
 };
 use syn::{FnArg, Item, ItemFn, ReturnType, Signature};
 
@@ -19,7 +19,51 @@ mod vector;
 
 use emit::item_kind;
 use env::{Env, Slot};
-use stmt::lower_block;
+use stmt::{always_jumps, lower_block};
+
+/// A lowered expression and the type it evaluates to. Every `lower_*` that
+/// produces a value hands back one of these.
+pub(super) type Typed = (Handle<Expression>, Handle<Type>);
+
+/// Coarse shape of a type, as far as operators and constructors care.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Shape {
+    Scalar(Scalar),
+    Vector(VectorSize, Scalar),
+    /// Columns, rows, component scalar.
+    Matrix(VectorSize, VectorSize, Scalar),
+    /// Structs and anything else without component-wise operators.
+    Other,
+}
+
+impl Shape {
+    /// Component scalar of a scalar, vector, or matrix.
+    pub(super) fn scalar(self) -> Option<Scalar> {
+        match self {
+            Shape::Scalar(s) | Shape::Vector(_, s) | Shape::Matrix(_, _, s) => Some(s),
+            Shape::Other => None,
+        }
+    }
+
+    /// Component kind of a scalar or vector. Matrices are excluded because Naga
+    /// treats them separately in every operator rule that uses this.
+    pub(super) fn elem_kind(self) -> Option<ScalarKind> {
+        match self {
+            Shape::Scalar(s) | Shape::Vector(_, s) => Some(s.kind),
+            Shape::Matrix(..) | Shape::Other => None,
+        }
+    }
+
+    /// The scalar an untyped integer literal should take on in this context,
+    /// mirroring Rust's integer literal inference. Floats are excluded: Rust
+    /// would not turn `1` into `1.0` either.
+    pub(super) fn int_hint(self) -> Option<Scalar> {
+        match self.scalar() {
+            Some(s) if matches!(s.kind, ScalarKind::Sint | ScalarKind::Uint) => Some(s),
+            _ => None,
+        }
+    }
+}
 
 pub struct Context {
     pub module: Module,
@@ -69,6 +113,28 @@ impl Context {
             },
             Span::UNDEFINED,
         )
+    }
+
+    pub(super) fn shape(&self, ty: Handle<Type>) -> Shape {
+        match self.module.types[ty].inner {
+            TypeInner::Scalar(scalar) => Shape::Scalar(scalar),
+            TypeInner::Vector { size, scalar } => Shape::Vector(size, scalar),
+            TypeInner::Matrix {
+                columns,
+                rows,
+                scalar,
+            } => Shape::Matrix(columns, rows, scalar),
+            _ => Shape::Other,
+        }
+    }
+
+    /// `bool` for a scalar operand, `vecN<bool>` for a vector one: the result
+    /// type of a comparison.
+    pub(super) fn bool_like(&mut self, ty: Handle<Type>) -> Handle<Type> {
+        match self.shape(ty) {
+            Shape::Vector(size, _) => self.intern_vector(size, Scalar::BOOL),
+            _ => self.intern_scalar(Scalar::BOOL),
+        }
     }
 
     pub(super) fn as_scalar(&self, ty: Handle<Type>) -> Option<Scalar> {
@@ -170,6 +236,22 @@ impl Context {
         }
     }
 
+    /// Functions and entry points share one namespace, as they do in WGSL.
+    /// Without this, two `fn f` end up as `f` and `f_1` in the output and calls
+    /// silently pick the first.
+    pub(super) fn claim_fn_name(&self, name: &str) -> Result<(), Error> {
+        let taken = self
+            .module
+            .functions
+            .iter()
+            .any(|(_, f)| f.name.as_deref() == Some(name))
+            || self.module.entry_points.iter().any(|e| e.name == name);
+        if taken {
+            return Err(Error::DuplicateFunction(name.into()));
+        }
+        Ok(())
+    }
+
     pub(super) fn struct_by_name(&self, name: &str) -> Option<Handle<Type>> {
         self.structs
             .iter()
@@ -210,6 +292,7 @@ impl Context {
         }
 
         let name = item.sig.ident.to_string();
+        self.claim_fn_name(&name)?;
         let result_ty = match &item.sig.output {
             ReturnType::Type(_, ty) => self.lower_type(ty)?,
             ReturnType::Default => return Err(Error::MissingReturnType(name)),
@@ -232,8 +315,14 @@ impl Context {
         env.push_scope();
         let tail = lower_block(self, &mut function, &mut body, &item.block, &mut env)?;
         env.pop_scope();
-        if let Some((value, _)) = tail {
-            body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
+        match tail {
+            Some((value, _)) => {
+                body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED)
+            }
+            None if !always_jumps(&body) => {
+                return Err(Error::MissingReturn(function.name.unwrap_or_default()))
+            }
+            None => {}
         }
         function.body = body;
         self.module.functions.append(function, Span::UNDEFINED);

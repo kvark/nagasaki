@@ -1,16 +1,14 @@
-use naga::{
-    Block, Expression, Function, Handle, MathFunction, Span, Statement, Type,
-};
+use naga::{Block, Expression, Function, MathFunction, Span, Statement};
 use syn::Expr;
 
 use super::emit::emit;
 use super::env::Env;
-use super::expr::lower_expr;
+use super::expr::lower_expr_hinted;
 use super::matrix::lower_mat_ctor;
 use super::parse_mat_ident;
 use super::parse_vec_ident;
 use super::vector::lower_vec_ctor;
-use super::Context;
+use super::{Context, Typed};
 use crate::Error;
 
 pub(super) fn lower_call(
@@ -19,7 +17,7 @@ pub(super) fn lower_call(
     body: &mut Block,
     call: &syn::ExprCall,
     env: &mut Env,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+) -> Result<Typed, Error> {
     let name = match call.func.as_ref() {
         Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
             path.path.segments[0].ident.to_string()
@@ -32,8 +30,18 @@ pub(super) fn lower_call(
     if parse_mat_ident(&name).is_some() {
         return lower_mat_ctor(ctx, function, body, call, env);
     }
-    if let Some(spec) = math_spec(&name) {
-        return lower_math(ctx, function, body, call, env, &name, spec);
+    // A function the user declared wins over a builtin of the same name.
+    // Resolving the other way round would silently call the builtin while
+    // Naga renamed the user's function out of the way.
+    let declared = ctx
+        .module
+        .functions
+        .iter()
+        .any(|(_, f)| f.name.as_deref() == Some(name.as_str()));
+    if !declared {
+        if let Some(spec) = math_spec(&name) {
+            return lower_math(ctx, function, body, call, env, &name, spec);
+        }
     }
     lower_fn_call(ctx, function, body, call, env, &name)
 }
@@ -54,7 +62,8 @@ fn math_spec(name: &str) -> Option<MathSpec> {
     use MathFunction as Mf;
     use MathResult::*;
     let (fun, argc, result) = match name {
-        "abs" | "sign" => (Mf::Abs, 1, SameAsFirst),
+        "abs" => (Mf::Abs, 1, SameAsFirst),
+        "sign" => (Mf::Sign, 1, SameAsFirst),
         "saturate" => (Mf::Saturate, 1, SameAsFirst),
         "sin" => (Mf::Sin, 1, SameAsFirst),
         "cos" => (Mf::Cos, 1, SameAsFirst),
@@ -91,11 +100,6 @@ fn math_spec(name: &str) -> Option<MathSpec> {
         "determinant" => (Mf::Determinant, 1, ScalarOfFirst),
         _ => return None,
     };
-    // Abs was paired with sign incorrectly when name is sign
-    let fun = match name {
-        "sign" => Mf::Sign,
-        _ => fun,
-    };
     Some(MathSpec { fun, argc, result })
 }
 
@@ -107,14 +111,17 @@ fn lower_math(
     env: &mut Env,
     name: &str,
     spec: MathSpec,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+) -> Result<Typed, Error> {
     if call.args.len() != spec.argc {
         return Err(Error::WrongArgCount(name.into()));
     }
+    // `clamp(n, 0, 1)`: the first argument fixes the type, the rest follow it.
+    let mut hint = None;
     let mut args = Vec::new();
     let mut tys = Vec::new();
     for arg in &call.args {
-        let (h, ty) = lower_expr(ctx, function, body, arg, env)?;
+        let (h, ty) = lower_expr_hinted(ctx, function, body, arg, env, hint)?;
+        hint = hint.or_else(|| ctx.shape(ty).int_hint());
         args.push(h);
         tys.push(ty);
     }
@@ -160,15 +167,7 @@ fn lower_fn_call(
     call: &syn::ExprCall,
     env: &mut Env,
     name: &str,
-) -> Result<(Handle<Expression>, Handle<Type>), Error> {
-    let mut arg_values = Vec::new();
-    let mut arg_tys = Vec::new();
-    for arg in &call.args {
-        let (h, ty) = lower_expr(ctx, function, body, arg, env)?;
-        arg_values.push(h);
-        arg_tys.push(ty);
-    }
-
+) -> Result<Typed, Error> {
     let (callee, expected, ret_ty) = {
         let found = ctx
             .module
@@ -185,13 +184,17 @@ fn lower_fn_call(
         (handle, expected, ret)
     };
 
-    if expected.len() != arg_tys.len() {
+    if expected.len() != call.args.len() {
         return Err(Error::WrongArgCount(name.into()));
     }
-    for (got, want) in arg_tys.iter().zip(expected.iter()) {
-        if got != want {
+    let mut arg_values = Vec::new();
+    for (arg, &want) in call.args.iter().zip(expected.iter()) {
+        let hint = ctx.shape(want).int_hint();
+        let (h, ty) = lower_expr_hinted(ctx, function, body, arg, env, hint)?;
+        if ty != want {
             return Err(Error::TypeMismatch);
         }
+        arg_values.push(h);
     }
 
     let result = function
