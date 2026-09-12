@@ -32,12 +32,14 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
   both attributes may be dropped for a host that assigns bindings itself — see [`validate_unbound`](#host-assigned-bindings)
 - address spaces: uniform (default / `#[uniform]`), `#[storage]` (read), `#[storage(read_write)]`
 - structs: `struct S { a: vec3, b: f32 }`, literals `S { a, b: x }`, field access `s.a`
+- arrays: `[T; N]` and literals `[a, b, c]`; `[T]` for a runtime-sized storage buffer
 - I/O structs: `#[location]` / `#[builtin]` on struct fields, for vertex outputs,
   fragment inputs, and multiple render targets
 
-Not yet: labeled loops, `break` values, forward calls, methods, generics, arrays,
-textures and samplers, `void` functions, `const` arithmetic (Naga wants constants
-already folded). Swizzles are values, so `v.xy = a` is rejected — as it is in WGSL.
+Not yet: labeled loops, `break` values, forward calls, methods, generics,
+textures and samplers, `void` functions, `array_length`, `const` arithmetic (Naga
+wants constants already folded). Swizzles are values, so `v.xy = a` is rejected —
+as it is in WGSL.
 Assignment to function arguments is rejected. Vector compare yields a `vecN<bool>`.
 
 ### Typing
@@ -55,6 +57,13 @@ A function with a return type has to return on every path; `if c { a }` as a
 whole body is rejected rather than quietly falling off the end.
 
 A function you declare shadows a math builtin of the same name.
+
+### Errors
+
+`validate` and `validate_unbound` return a `ValidationError` that prints Naga's
+whole source chain. Naga puts the useful part there: the top level says only
+that a global is invalid, and the reason ("the array stride 4 is not a multiple
+of the required alignment 16") is one `source()` down.
 
 ### Places
 

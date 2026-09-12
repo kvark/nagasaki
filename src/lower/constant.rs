@@ -15,6 +15,8 @@ pub(crate) struct ConstInfo {
     pub name: String,
     pub handle: Handle<Constant>,
     pub ty: Handle<Type>,
+    /// The initializer, so a `const` can serve as an array length.
+    pub init_expr: Handle<Expression>,
 }
 
 pub(super) fn lower_const_item(ctx: &mut Context, item: ItemConst) -> Result<(), Error> {
@@ -39,7 +41,12 @@ pub(super) fn lower_const_item(ctx: &mut Context, item: ItemConst) -> Result<(),
         },
         Span::UNDEFINED,
     );
-    ctx.consts.push(ConstInfo { name, handle, ty });
+    ctx.consts.push(ConstInfo {
+        name,
+        handle,
+        ty,
+        init_expr: init,
+    });
     Ok(())
 }
 

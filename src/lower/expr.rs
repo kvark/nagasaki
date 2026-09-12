@@ -87,6 +87,7 @@ pub(super) fn lower_expr_hinted(
             }
         }
         Expr::Struct(lit) => super::structure::lower_struct_lit(ctx, function, body, lit, env),
+        Expr::Array(array) => lower_array_lit(ctx, function, body, array, env),
         _ => Err(Error::UnsupportedExpr(expr_kind(expr))),
     }
 }
@@ -249,6 +250,38 @@ fn lower_compound_assign(
     )?;
     body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
     Ok((value, ty))
+}
+
+/// `[a, b, c]`: a fixed-size array, typed from its first element.
+fn lower_array_lit(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    array: &syn::ExprArray,
+    env: &mut Env,
+) -> Result<Typed, Error> {
+    let Some(len) = core::num::NonZeroU32::new(array.elems.len() as u32) else {
+        return Err(Error::UnsupportedExpr("empty array literal".into()));
+    };
+    let mut hint = None;
+    let mut components = Vec::new();
+    let mut base = None;
+    for elem in &array.elems {
+        let (handle, ty) = lower_expr_hinted(ctx, function, body, elem, env, hint)?;
+        match base {
+            None => {
+                hint = ctx.shape(ty).int_hint();
+                base = Some(ty);
+            }
+            Some(base) if base != ty => return Err(Error::TypeMismatch),
+            Some(_) => {}
+        }
+        components.push(handle);
+    }
+    let base = base.expect("non-empty");
+    let ty = ctx.intern_array(base, naga::ArraySize::Constant(len))?;
+    let handle = emit(function, body, Expression::Compose { ty, components })?;
+    Ok((handle, ty))
 }
 
 fn lower_cast(

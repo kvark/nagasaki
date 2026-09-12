@@ -78,6 +78,8 @@ pub enum Error {
     MatCtorArgs,
     #[error("resource `{0}` needs #[group] and #[binding]")]
     MissingResourceBinding(String),
+    #[error("`{0}` is a runtime-sized array, so it needs `#[storage]`")]
+    RuntimeArrayNotStorage(String),
     #[error("duplicate global `{0}`")]
     DuplicateGlobal(String),
     #[error("cannot assign to read-only global `{0}`")]

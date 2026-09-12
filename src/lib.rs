@@ -30,10 +30,41 @@ pub fn parse_str(source: &str) -> Result<naga::Module, Error> {
     Ok(ctx.module)
 }
 
+/// A Naga validation failure, with the reason it gives.
+///
+/// Naga puts the useful part of a validation error in the source chain: the top
+/// level says only which global or function is invalid. Printing this prints
+/// the whole chain, so the actual complaint is visible.
+#[derive(Debug)]
+pub struct ValidationError(Box<naga::WithSpan<naga::valid::ValidationError>>);
+
+impl ValidationError {
+    /// The underlying Naga error, spans included.
+    pub fn into_inner(self) -> naga::WithSpan<naga::valid::ValidationError> {
+        *self.0
+    }
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)?;
+        let mut source = std::error::Error::source(&*self.0);
+        while let Some(err) = source {
+            write!(f, ": {err}")?;
+            source = err.source();
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ValidationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.0)
+    }
+}
+
 /// Validate `module` with default Naga flags.
-pub fn validate(
-    module: &naga::Module,
-) -> Result<naga::valid::ModuleInfo, Box<dyn std::error::Error + Send + Sync>> {
+pub fn validate(module: &naga::Module) -> Result<naga::valid::ModuleInfo, ValidationError> {
     validate_with(module, naga::valid::ValidationFlags::all())
 }
 
@@ -43,9 +74,7 @@ pub fn validate(
 /// shader and fill them in at pipeline creation, matching globals up by name.
 /// A module for one of those has globals with no binding, which the default
 /// flags reject.
-pub fn validate_unbound(
-    module: &naga::Module,
-) -> Result<naga::valid::ModuleInfo, Box<dyn std::error::Error + Send + Sync>> {
+pub fn validate_unbound(module: &naga::Module) -> Result<naga::valid::ModuleInfo, ValidationError> {
     validate_with(
         module,
         naga::valid::ValidationFlags::all() ^ naga::valid::ValidationFlags::BINDINGS,
@@ -55,8 +84,10 @@ pub fn validate_unbound(
 fn validate_with(
     module: &naga::Module,
     flags: naga::valid::ValidationFlags,
-) -> Result<naga::valid::ModuleInfo, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(naga::valid::Validator::new(flags, naga::valid::Capabilities::empty()).validate(module)?)
+) -> Result<naga::valid::ModuleInfo, ValidationError> {
+    naga::valid::Validator::new(flags, naga::valid::Capabilities::empty())
+        .validate(module)
+        .map_err(|e| ValidationError(Box::new(e)))
 }
 
 /// Emit WGSL for a validated module.

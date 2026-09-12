@@ -1,6 +1,8 @@
+use core::num::NonZeroU32;
+
 use naga::{
-    Block, Expression, Function, FunctionArgument, FunctionResult, Handle, Module, Scalar,
-    ScalarKind, Span, Statement, Type, TypeInner, VectorSize,
+    ArraySize, Block, Expression, Function, FunctionArgument, FunctionResult, Handle, Module,
+    Scalar, ScalarKind, Span, Statement, Type, TypeInner, VectorSize,
 };
 use syn::{FnArg, Item, ItemFn, ReturnType, Signature};
 
@@ -189,6 +191,18 @@ impl Context {
     pub(super) fn lower_type(&mut self, ty: &syn::Type) -> Result<Handle<Type>, Error> {
         let path = match ty {
             syn::Type::Path(path) if path.qself.is_none() => path,
+            // `[T]` is a runtime-sized array: what a storage buffer holds.
+            syn::Type::Slice(slice) => {
+                let base = self.lower_type(&slice.elem)?;
+                return self.intern_array(base, ArraySize::Dynamic);
+            }
+            // `[T; N]` is a fixed array.
+            syn::Type::Array(array) => {
+                let base = self.lower_type(&array.elem)?;
+                let len = self.array_len(&array.len)?;
+                return self.intern_array(base, ArraySize::Constant(len));
+            }
+            syn::Type::Paren(inner) => return self.lower_type(&inner.elem),
             _ => return Err(Error::UnsupportedType("non-path type".into())),
         };
         if path.path.segments.len() != 1 {
@@ -257,12 +271,73 @@ impl Context {
         Ok(())
     }
 
+    /// An array length: a literal, or a `const` naming one.
+    fn array_len(&self, len: &syn::Expr) -> Result<NonZeroU32, Error> {
+        let value = match len {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(int),
+                ..
+            }) => int.base10_parse::<u32>().map_err(Error::from)?,
+            syn::Expr::Path(path) => {
+                let name = path
+                    .path
+                    .get_ident()
+                    .ok_or_else(|| Error::UnsupportedType("array length".into()))?
+                    .to_string();
+                let info = self
+                    .consts
+                    .iter()
+                    .find(|c| c.name == name)
+                    .ok_or(Error::UnknownIdent(name))?;
+                match self.module.global_expressions[info.init_expr] {
+                    naga::Expression::Literal(naga::Literal::U32(v)) => v,
+                    naga::Expression::Literal(naga::Literal::I32(v)) if v >= 0 => v as u32,
+                    _ => return Err(Error::UnsupportedType("array length".into())),
+                }
+            }
+            _ => return Err(Error::UnsupportedType("array length".into())),
+        };
+        NonZeroU32::new(value).ok_or_else(|| Error::UnsupportedType("zero-length array".into()))
+    }
+
     pub(super) fn struct_by_name(&self, name: &str) -> Option<Handle<Type>> {
         self.structs
             .iter()
             .rev()
             .find(|(n, _)| n == name)
             .map(|(_, h)| *h)
+    }
+
+    pub(super) fn as_array(&self, ty: Handle<Type>) -> Option<(Handle<Type>, ArraySize)> {
+        match self.module.types[ty].inner {
+            TypeInner::Array { base, size, .. } => Some((base, size)),
+            _ => None,
+        }
+    }
+
+    /// Byte distance between consecutive elements of `base`, which Naga needs
+    /// baked into the array type.
+    pub(super) fn stride_of(&self, base: Handle<Type>) -> Result<u32, Error> {
+        let mut layouter = naga::proc::Layouter::default();
+        layouter
+            .update(self.module.to_ctx())
+            .map_err(|e| Error::UnsupportedType(e.to_string()))?;
+        Ok(layouter[base].to_stride())
+    }
+
+    pub(super) fn intern_array(
+        &mut self,
+        base: Handle<Type>,
+        size: ArraySize,
+    ) -> Result<Handle<Type>, Error> {
+        let stride = self.stride_of(base)?;
+        Ok(self.module.types.insert(
+            Type {
+                name: None,
+                inner: TypeInner::Array { base, size, stride },
+            },
+            Span::UNDEFINED,
+        ))
     }
 
     pub(super) fn as_struct(&self, ty: Handle<Type>) -> Option<&[naga::StructMember]> {

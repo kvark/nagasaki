@@ -90,6 +90,12 @@ fn insert_global(
         }
     };
 
+    // WGSL puts runtime-sized arrays in storage only. Naga notices too, but as
+    // an alignment complaint about a stride nobody wrote.
+    if !matches!(space, AddressSpace::Storage { .. }) && has_runtime_array(ctx, ty) {
+        return Err(Error::RuntimeArrayNotStorage(name));
+    }
+
     let handle = ctx.module.global_variables.append(
         GlobalVariable {
             name: Some(name.clone()),
@@ -108,6 +114,17 @@ fn insert_global(
         writable,
     });
     Ok(())
+}
+
+/// Is `ty` a runtime-sized array, or a struct ending in one?
+fn has_runtime_array(ctx: &Context, ty: Handle<Type>) -> bool {
+    if matches!(ctx.as_array(ty), Some((_, naga::ArraySize::Dynamic))) {
+        return true;
+    }
+    match ctx.as_struct(ty).and_then(|members| members.last()) {
+        Some(last) => has_runtime_array(ctx, last.ty),
+        None => false,
+    }
 }
 
 fn parse_resource_attrs(attrs: &[Attribute]) -> Result<ResourceInfo, Error> {
