@@ -18,7 +18,8 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - casts: `a as f32`, `v as vec3<u32>` (same width, component-wise)
 - `let` / `let x: T = …`, and `let x: T;` assigned later (WGSL's bare `var x: T;`)
 - `if` / `else` / `else if` as statement or value
-- `x = e` and compound `+=`/`-=`/`*=`/`/=`/… on locals
+- `x = e` and compound `+=`/`-=`/`*=`/`/=`/… on any place: a local, a writable
+  global, a field `s.a`, a component `v.x` / `v[i]`, a matrix column `m[0]`
 - `loop` / `while` / `for x in a..b` / `a..=b` / `break` / `continue`
 - implicit tail expressions and `return`
 - entry points: `#[vertex]` / `#[fragment]` / `#[compute]` + `#[workgroup_size(x,y,z)]`
@@ -34,9 +35,9 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - I/O structs: `#[location]` / `#[builtin]` on struct fields, for vertex outputs,
   fragment inputs, and multiple render targets
 
-Not yet: labeled loops, `break` values, component stores (`v.x =` / `s.a =`),
-forward calls, methods, generics, arrays, textures and samplers, `void` functions,
-`const` arithmetic (Naga wants constants already folded).
+Not yet: labeled loops, `break` values, forward calls, methods, generics, arrays,
+textures and samplers, `void` functions, `const` arithmetic (Naga wants constants
+already folded). Swizzles are values, so `v.xy = a` is rejected — as it is in WGSL.
 Assignment to function arguments is rejected. Vector compare yields a `vecN<bool>`.
 
 ### Typing
@@ -54,6 +55,14 @@ A function with a return type has to return on every path; `if c { a }` as a
 whole body is rejected rather than quietly falling off the end.
 
 A function you declare shadows a math builtin of the same name.
+
+### Places
+
+`s.a`, `v.x`, `v[i]` and `m[0]` are lowered as pointers rather than as
+components picked out of a loaded value. That is what makes them assignable,
+and it means reading one field of a uniform buffer loads that field instead of
+the whole struct. A function argument is a value, so its fields can be read but
+not written.
 
 ### Host-assigned bindings
 

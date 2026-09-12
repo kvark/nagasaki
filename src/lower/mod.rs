@@ -14,6 +14,7 @@ mod env;
 mod expr;
 mod global;
 mod matrix;
+mod place;
 mod stmt;
 mod structure;
 mod vector;

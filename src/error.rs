@@ -38,7 +38,7 @@ pub enum Error {
     UnsupportedCast(String),
     #[error("cannot assign to function argument `{0}`")]
     AssignToArgument(String),
-    #[error("assignment target must be a local identifier")]
+    #[error("cannot assign to this expression (a swizzle or call result is not storage)")]
     InvalidAssignTarget,
     #[error("labeled loops are not supported")]
     LoopLabel,

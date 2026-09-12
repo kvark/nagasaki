@@ -7,6 +7,7 @@ use syn::{BinOp, Expr};
 use super::call::lower_call;
 use super::emit::{emit, expr_kind};
 use super::env::{Env, Slot};
+use super::place::{self, lower_place};
 use super::stmt::{lower_block, lower_if_expr};
 use super::vector::{lower_field, lower_index, splat_mix, splat_shift};
 use super::{Context, Shape, Typed};
@@ -73,8 +74,18 @@ pub(super) fn lower_expr_hinted(
             tail.ok_or(Error::MissingBlockValue)
         }
         Expr::Call(call) => lower_call(ctx, function, body, call, env),
-        Expr::Field(field) => lower_field(ctx, function, body, field, env),
-        Expr::Index(index) => lower_index(ctx, function, body, index, env),
+        Expr::Field(_) | Expr::Index(_) => {
+            // A place loads just the component; anything else (a swizzle, a
+            // field of a function argument) falls back to the value walk.
+            if let Some(place) = lower_place(ctx, function, body, expr, env)? {
+                return Ok((place::load(function, body, &place)?, place.ty));
+            }
+            match expr {
+                Expr::Field(field) => lower_field(ctx, function, body, field, env),
+                Expr::Index(index) => lower_index(ctx, function, body, index, env),
+                _ => unreachable!("matched above"),
+            }
+        }
         Expr::Struct(lit) => super::structure::lower_struct_lit(ctx, function, body, lit, env),
         _ => Err(Error::UnsupportedExpr(expr_kind(expr))),
     }
@@ -169,31 +180,6 @@ fn lower_binary(
     Ok((handle, ty))
 }
 
-/// Resolve an assignment target to the pointer it stores through.
-fn assign_target(left: &Expr, env: &Env) -> Result<Typed, Error> {
-    let name = match left {
-        Expr::Path(path) => path
-            .path
-            .get_ident()
-            .ok_or(Error::InvalidAssignTarget)?
-            .to_string(),
-        Expr::Paren(inner) => return assign_target(&inner.expr, env),
-        Expr::Group(inner) => return assign_target(&inner.expr, env),
-        _ => return Err(Error::InvalidAssignTarget),
-    };
-    let binding = env
-        .lookup(&name)
-        .ok_or_else(|| Error::UnknownIdent(name.clone()))?;
-    let pointer = match binding.slot {
-        Slot::Ptr(pointer) => pointer,
-        Slot::Value(_) => return Err(Error::AssignToArgument(name)),
-    };
-    if !binding.writable {
-        return Err(Error::AssignToReadonly(name));
-    }
-    Ok((pointer, binding.ty))
-}
-
 fn lower_assign(
     ctx: &mut Context,
     function: &mut Function,
@@ -202,7 +188,8 @@ fn lower_assign(
     right: &Expr,
     env: &mut Env,
 ) -> Result<Typed, Error> {
-    let (pointer, ty) = assign_target(left, env)?;
+    let place = place::assign_place(ctx, function, body, left, env)?;
+    let (pointer, ty) = (place.pointer, place.ty);
     let hint = ctx.shape(ty).int_hint();
     let (value, value_ty) = lower_expr_hinted(ctx, function, body, right, env, hint)?;
     if value_ty != ty {
@@ -223,7 +210,8 @@ fn lower_compound_assign(
     op: BinaryOperator,
     env: &mut Env,
 ) -> Result<Typed, Error> {
-    let (pointer, ty) = assign_target(left, env)?;
+    let place = place::assign_place(ctx, function, body, left, env)?;
+    let (pointer, ty) = (place.pointer, place.ty);
     let shift = is_shift(op);
     let hint = if shift {
         Some(Scalar::U32)
