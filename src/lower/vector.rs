@@ -5,7 +5,7 @@ use super::emit::emit;
 use super::env::Env;
 use super::expr::{lower_expr, lower_expr_hinted};
 use super::parse_vec_ident;
-use super::place::{index_expr, vector_component, IndexKind};
+use super::place::{element, index_expr, vector_component, IndexKind};
 use super::{Context, Shape, Typed};
 use crate::Error;
 
@@ -215,13 +215,8 @@ pub(super) fn lower_index(
     env: &mut Env,
 ) -> Result<Typed, Error> {
     let (base, base_ty) = lower_expr(ctx, function, body, &index.expr, env)?;
-    let (bound, result_ty) = if let Some((vec_size, scalar)) = ctx.as_vector(base_ty) {
-        (vec_size as u32, ctx.intern_scalar(scalar))
-    } else if let Some((columns, rows, scalar)) = ctx.as_matrix(base_ty) {
-        (columns as u32, ctx.intern_vector(rows, scalar))
-    } else {
-        return Err(Error::UnsupportedExpr("index".into()));
-    };
+    let (bound, result_ty) =
+        element(ctx, base_ty).ok_or_else(|| Error::UnsupportedExpr("index".into()))?;
     let handle = match index_expr(ctx, function, body, &index.index, bound, env)? {
         IndexKind::Constant(index) => {
             emit(function, body, Expression::AccessIndex { base, index })?

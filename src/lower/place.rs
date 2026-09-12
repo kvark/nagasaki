@@ -152,12 +152,20 @@ pub(super) fn vector_component(name: &str) -> Option<u32> {
     }
 }
 
-/// The bound and element type of an indexable `ty`.
-fn element(ctx: &mut Context, ty: Handle<Type>) -> Option<(u32, Handle<Type>)> {
+/// The bound and element type of an indexable `ty`. A runtime-sized array has
+/// no bound to check a literal index against.
+pub(super) fn element(ctx: &mut Context, ty: Handle<Type>) -> Option<(Option<u32>, Handle<Type>)> {
+    if let Some((base, size)) = ctx.as_array(ty) {
+        let bound = match size {
+            naga::ArraySize::Constant(n) => Some(n.get()),
+            _ => None,
+        };
+        return Some((bound, base));
+    }
     match ctx.shape(ty) {
-        Shape::Vector(size, scalar) => Some((size as u32, ctx.intern_scalar(scalar))),
+        Shape::Vector(size, scalar) => Some((Some(size as u32), ctx.intern_scalar(scalar))),
         Shape::Matrix(columns, rows, scalar) => {
-            Some((columns as u32, ctx.intern_vector(rows, scalar)))
+            Some((Some(columns as u32), ctx.intern_vector(rows, scalar)))
         }
         _ => None,
     }
@@ -225,7 +233,7 @@ pub(super) fn index_expr(
     function: &mut Function,
     body: &mut naga::Block,
     index: &Expr,
-    bound: u32,
+    bound: Option<u32>,
     env: &mut Env,
 ) -> Result<IndexKind, Error> {
     if let Expr::Lit(syn::ExprLit {
@@ -234,7 +242,7 @@ pub(super) fn index_expr(
     }) = strip(index)
     {
         let idx: u32 = int.base10_parse().map_err(Error::from)?;
-        if idx >= bound {
+        if matches!(bound, Some(bound) if idx >= bound) {
             return Err(Error::VecIndexRange);
         }
         return Ok(IndexKind::Constant(idx));
