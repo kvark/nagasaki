@@ -5,6 +5,7 @@ use super::emit::emit;
 use super::env::Env;
 use super::expr::{lower_expr, lower_expr_hinted};
 use super::parse_vec_ident;
+use super::place::{index_expr, vector_component, IndexKind};
 use super::{Context, Shape, Typed};
 use crate::Error;
 
@@ -160,27 +161,17 @@ pub(super) fn lower_field(
     let (vec_size, scalar) = ctx
         .as_vector(base_ty)
         .ok_or_else(|| Error::UnsupportedExpr("field".into()))?;
-    let letters: Vec<char> = member.chars().collect();
-    if letters.is_empty()
-        || letters.len() > 4
-        || !letters.iter().all(|c| matches!(c, 'x' | 'y' | 'z' | 'w'))
-    {
+    let letters: Vec<u32> = member
+        .chars()
+        .map(|c| vector_component(&c.to_string()))
+        .collect::<Option<_>>()
+        .ok_or_else(|| Error::UnsupportedSwizzle(member.clone()))?;
+    if letters.is_empty() || letters.len() > 4 || letters.iter().any(|&i| i >= vec_size as u32) {
         return Err(Error::UnsupportedSwizzle(member));
     }
-    let max = vec_size as u32;
     let mut pattern = [SwizzleComponent::X; 4];
-    for (i, ch) in letters.iter().enumerate() {
-        let index = match ch {
-            'x' => 0,
-            'y' => 1,
-            'z' => 2,
-            'w' => 3,
-            _ => unreachable!(),
-        };
-        if index >= max {
-            return Err(Error::UnsupportedSwizzle(member));
-        }
-        pattern[i] = match index {
+    for (slot, &index) in pattern.iter_mut().zip(letters.iter()) {
+        *slot = match index {
             0 => SwizzleComponent::X,
             1 => SwizzleComponent::Y,
             2 => SwizzleComponent::Z,
@@ -231,30 +222,11 @@ pub(super) fn lower_index(
     } else {
         return Err(Error::UnsupportedExpr("index".into()));
     };
-    if let Expr::Lit(syn::ExprLit {
-        lit: syn::Lit::Int(int),
-        ..
-    }) = index.index.as_ref()
-    {
-        let idx: u32 = int.base10_parse().map_err(Error::from)?;
-        if idx >= bound {
-            return Err(Error::VecIndexRange);
+    let handle = match index_expr(ctx, function, body, &index.index, bound, env)? {
+        IndexKind::Constant(index) => {
+            emit(function, body, Expression::AccessIndex { base, index })?
         }
-        let handle = emit(function, body, Expression::AccessIndex { base, index: idx })?;
-        return Ok((handle, result_ty));
-    }
-    let (idx_expr, idx_ty) = lower_expr(ctx, function, body, &index.index, env)?;
-    match ctx.as_scalar(idx_ty) {
-        Some(s) if s == Scalar::I32 || s == Scalar::U32 => {}
-        _ => return Err(Error::TypeMismatch),
-    }
-    let handle = emit(
-        function,
-        body,
-        Expression::Access {
-            base,
-            index: idx_expr,
-        },
-    )?;
+        IndexKind::Dynamic(index) => emit(function, body, Expression::Access { base, index })?,
+    };
     Ok((handle, result_ty))
 }
