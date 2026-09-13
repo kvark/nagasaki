@@ -18,6 +18,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
+      # The workspace member wires a build script up for real: its shaders are
+      # transpiled by Cargo before it compiles, so this failing means the
+      # documented workflow is broken however green the unit tests are.
+      - run: cargo run -p sprites
 
   # Lints are held to a pinned toolchain, so a new lint in a future Rust
   # release turns this red only when someone bumps the version on purpose.

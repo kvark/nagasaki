@@ -14,6 +14,7 @@
 //! is a module [`validate`] accepts; untyped integer literals take their type
 //! from context, as Rust's inference would.
 
+pub mod build;
 mod error;
 mod lower;
 
@@ -24,10 +25,46 @@ use lower::Context;
 
 /// Parse a Rust source string into a Naga module.
 pub fn parse_str(source: &str) -> Result<naga::Module, Error> {
-    let file: syn::File = syn::parse_str(source)?;
+    parse_all([source]).map_err(|err| err.error)
+}
+
+/// Parse several sources into one module, in order, as if concatenated.
+///
+/// This is how a shared prelude is combined with the module that uses it.
+/// Concatenating the text first would work too, but then every line number in
+/// an error from the second file is off by the length of the first; parsed
+/// separately, each keeps its own, and [`SourceError::index`] says which one
+/// went wrong.
+pub fn parse_all<'a>(
+    sources: impl IntoIterator<Item = &'a str>,
+) -> Result<naga::Module, SourceError> {
     let mut ctx = Context::new();
-    ctx.lower_file(file)?;
+    for (index, source) in sources.into_iter().enumerate() {
+        let at = |error: Error| SourceError { index, error };
+        let file: syn::File = syn::parse_str(source).map_err(|e| at(Error::from(e)))?;
+        ctx.lower_file(file).map_err(at)?;
+    }
     Ok(ctx.module)
+}
+
+/// An [`Error`], and which of the sources handed to [`parse_all`] it came from.
+#[derive(Debug)]
+pub struct SourceError {
+    /// Index into the sources, in the order they were given.
+    pub index: usize,
+    pub error: Error,
+}
+
+impl std::fmt::Display for SourceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+
+impl std::error::Error for SourceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
 }
 
 /// A Naga validation failure, with the reason it gives.

@@ -2,6 +2,18 @@
 pub enum Error {
     #[error(transparent)]
     Syn(#[from] syn::Error),
+    /// Where in the source the error below came from.
+    ///
+    /// Attached per item, which is as fine-grained as the lowering gets: it
+    /// names the `fn` or `struct` and the line it opens on, so a failure in a
+    /// build step points somewhere rather than just failing.
+    #[error("{item} on line {line}: {source}")]
+    At {
+        item: String,
+        line: usize,
+        #[source]
+        source: Box<Error>,
+    },
     #[error("unsupported item: {0}")]
     UnsupportedItem(String),
     #[error("unsupported type: {0}")]
@@ -124,4 +136,22 @@ pub enum Error {
     RedundantReturnBinding(String),
     #[error("`#[location]` field `{0}` is an integer, so it needs `#[flat]`")]
     MissingFlat(String),
+}
+
+impl Error {
+    /// Where in the source this happened, as a 1-based line and column.
+    ///
+    /// A parse error knows both; a lowering error knows the line of the item
+    /// it came from. Anything the lowering raises outside an item knows
+    /// neither.
+    pub fn location(&self) -> Option<(usize, usize)> {
+        match self {
+            Error::Syn(err) => {
+                let start = err.span().start();
+                Some((start.line, start.column + 1))
+            }
+            Error::At { line, .. } => Some((*line, 1)),
+            _ => None,
+        }
+    }
 }
