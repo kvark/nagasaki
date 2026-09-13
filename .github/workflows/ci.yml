@@ -6,20 +6,32 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
+  # Tests run on whatever stable is current, without -D warnings: a new
+  # release should be able to warn about this code without failing the build
+  # that proves it still works.
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
+  # Lints are held to a pinned toolchain, so a new lint in a future Rust
+  # release turns this red only when someone bumps the version on purpose.
+  # Floating stable plus -D warnings breaks CI on code nobody touched.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
 
   msrv:
     runs-on: ubuntu-latest
