@@ -90,18 +90,25 @@ impl Context {
 
     pub fn lower_file(&mut self, file: syn::File) -> Result<(), Error> {
         for item in file.items {
-            match item {
-                Item::Fn(func) => {
-                    self.lower_fn(func)?;
-                }
-                Item::Static(st) => global::lower_static(self, st)?,
-                Item::ForeignMod(fm) => global::lower_foreign_mod(self, fm)?,
-                Item::Struct(st) => structure::lower_struct_item(self, st)?,
-                Item::Const(c) => constant::lower_const_item(self, c)?,
-                other => return Err(Error::UnsupportedItem(item_kind(&other))),
-            }
+            let (name, line) = item_location(&item);
+            self.lower_item(item).map_err(|source| Error::At {
+                item: name,
+                line,
+                source: Box::new(source),
+            })?;
         }
         Ok(())
+    }
+
+    fn lower_item(&mut self, item: Item) -> Result<(), Error> {
+        match item {
+            Item::Fn(func) => self.lower_fn(func),
+            Item::Static(st) => global::lower_static(self, st),
+            Item::ForeignMod(fm) => global::lower_foreign_mod(self, fm),
+            Item::Struct(st) => structure::lower_struct_item(self, st),
+            Item::Const(c) => constant::lower_const_item(self, c),
+            other => Err(Error::UnsupportedItem(item_kind(&other))),
+        }
     }
 
     /// Intern a type that has no component structure of its own: an image or
@@ -482,6 +489,20 @@ impl Context {
         self.module.functions.append(function, Span::UNDEFINED);
         Ok(())
     }
+}
+
+/// How to name an item in an error, and the line it opens on.
+fn item_location(item: &Item) -> (String, usize) {
+    use syn::spanned::Spanned;
+    let name = match item {
+        Item::Fn(f) => format!("`fn {}`", f.sig.ident),
+        Item::Struct(s) => format!("`struct {}`", s.ident),
+        Item::Static(s) => format!("`static {}`", s.ident),
+        Item::Const(c) => format!("`const {}`", c.ident),
+        Item::ForeignMod(_) => "`extern` block".to_string(),
+        other => item_kind(other),
+    };
+    (name, item.span().start().line)
 }
 
 /// Parse `vec2` / `Vec3` / `vec4f` / `vec3i` / `vec2u`.

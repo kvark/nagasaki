@@ -161,7 +161,70 @@ has to call its argument something else.
 Of Blade's 37 shaders, 36 use only constructs the dialect covers; the exception is
 its cooperative-matrix matmul example.
 
-## Example
+## Using it
+
+Shaders are ordinary-looking source files compiled by a build script, so
+nothing at runtime parses or transpiles:
+
+```text
+src/
+  main.rs
+  shaders/
+    common.rs      <- helpers shared by the rest
+    sprite.rs      <- one shader module
+build.rs
+```
+
+```rust,ignore
+// build.rs
+fn main() {
+    nagasaki::build::Shaders::new().prelude("common.rs").run();
+}
+```
+
+```rust,ignore
+// src/main.rs — the generated module is ordinary Rust
+mod shaders {
+    include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
+}
+
+let wgsl: &str = shaders::SPRITE;
+```
+
+One `pub const` per module, named after the file. Cargo re-runs the build when
+any shader changes, and a shader that does not compile fails the build the way
+a Rust error would:
+
+```text
+error: sprites@0.1.0: src/shaders/tonemap.rs:20:1: `fn tonemap`: operator `-` does not apply to these operand types
+```
+
+`examples/sprites` is this, working.
+
+### The shader files are not part of your crate
+
+A shader module mentions `vec3`, `texture_2d<f32>`, `#[vertex]` — none of which
+are Rust. So the files must not be reachable from your crate root: there is no
+`mod shaders;` pointing at `src/shaders/`, and Cargo never looks at a file
+nothing declares. The `.rs` extension still buys syntax highlighting and brace
+matching.
+
+The cost is real: `rustc` never sees these files, so they get no borrow
+checking and no inference beyond what this crate does, and `cargo fmt` skips
+them for the same reason. rust-analyzer will also mark them "not included in
+the module tree"; `rust-analyzer.files.excludeDirs` takes that off. If you
+would rather they not look like crate sources at all, point `Shaders::dir` at
+`shaders/` beside `src/`.
+
+### A prelude in place of `#include`
+
+Files named with `prelude` are declarations every module can use, and are not
+compiled as shaders themselves. What a module does not reach is pruned from its
+output, so one prelude can hold everything the set needs between them without
+every shader carrying all of it — which matters for a host that binds resources
+by name and would otherwise have to find something to bind an unused uniform to.
+
+### Or call it directly
 
 ```rust
 use nagasaki::{parse_str, to_wgsl, validate};
