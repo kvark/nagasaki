@@ -527,13 +527,9 @@ pub(super) fn parse_mat_ident(name: &str) -> Option<(VectorSize, VectorSize, Opt
         "mat3" | "Mat3" => Some((VectorSize::Tri, VectorSize::Tri, scalar)),
         "mat4" | "Mat4" => Some((VectorSize::Quad, VectorSize::Quad, scalar)),
         other => {
-            let rest = if let Some(r) = other.strip_prefix("mat") {
-                r
-            } else if let Some(r) = other.strip_prefix("Mat") {
-                r
-            } else {
-                return None;
-            };
+            let rest = other
+                .strip_prefix("mat")
+                .or_else(|| other.strip_prefix("Mat"))?;
             let b = rest.as_bytes();
             if b.len() == 3 && b[1] == b'x' {
                 let (columns, rows) = pair(b[0] as char, b[2] as char)?;
