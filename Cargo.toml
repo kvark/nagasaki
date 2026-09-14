@@ -11,11 +11,6 @@ license = "MIT"
 repository = "https://github.com/kvark/synaga"
 readme = "README.md"
 
-[dev-dependencies]
-# Parses the original WGSL in tests/blade_shaders.rs, so a port can be checked
-# against the shader it came from rather than against its author's memory.
-naga = { version = "30", features = ["wgsl-in", "wgsl-out"] }
-
 [dependencies]
 naga = { version = "30", features = ["wgsl-out"] }
 # `span-locations` is what lets an error say which line it is about. Features

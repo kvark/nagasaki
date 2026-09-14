@@ -148,12 +148,17 @@ for the host to fill in — which is how Blade supplies vertex attributes.
 
 ### Blade
 
-`tests/blade_shaders.rs` ports shaders from [Blade][blade] — bunnymark, egui,
-skin, debug-blit, the a-trous denoiser, colour and quaternion helpers, the
-random-number generator, and particle and post-process compute passes. Five of
-them are checked against the WGSL they came from: Naga parses the original,
-synaga parses the port, and the two modules must describe the same globals,
-functions, entry points, struct layouts and bindings.
+The dialect was built against [Blade][blade]'s shaders, which is why it covers
+what it covers. Bunnymark, egui, skin, debug-blit, the a-trous denoiser, the
+colour and quaternion helpers, the random-number generator, and the particle and
+post-process compute passes have all been ported and checked, five of them
+against the WGSL they came from: Naga parses the original, synaga parses the
+port, and the two modules must describe the same globals, functions, entry
+points, struct layouts and bindings.
+
+Those ports are in the git history rather than the tree; there is no reason to
+carry someone else's shaders here until there is something to do with them.
+`tests/blade_basics.rs` keeps the constructs they needed.
 
 Rust keywords are the one thing that forces a rename: Blade's `fn fs_main(in: VertexOutput)`
 has to call its argument something else.
