@@ -260,3 +260,72 @@ fn ray_queries_cannot_be_written_as_wgsl() {
     assert!(matches!(err.kind, BuildErrorKind::Emit(_)), "{err}");
     assert!(err.to_string().contains("ray query"), "{err}");
 }
+
+#[test]
+fn an_entry_point_naga_renames_is_reported() {
+    // Naga's WGSL backend reserves names it might need to uniquify, so a name
+    // ending in a digit comes back with a `_`. A host creating a pipeline asks
+    // for an entry point by name, so a silent rename is a runtime failure at
+    // the worst possible moment. The names come from Naga's own namer, so this
+    // is what the backend did, not a reading of what it wrote.
+    let dir = scratch("renamed");
+    write(
+        &dir,
+        "blur.rs",
+        r#"
+        #[compute]
+        #[workgroup_size(8, 8)]
+        fn blur3x3() {}
+
+        #[compute]
+        #[workgroup_size(8, 8)]
+        fn blur() {}
+        "#,
+    );
+
+    let shaders = Shaders::new()
+        .dir(dir.join("shaders"))
+        .emit_to(&dir.join("out"))
+        .expect("emit");
+    // Every entry point is reported, renamed or not.
+    let reported: Vec<(&str, &str)> = shaders[0]
+        .entry_points
+        .iter()
+        .map(|e| (e.name.as_str(), e.emitted_name.as_str()))
+        .collect();
+    assert_eq!(reported, [("blur3x3", "blur3x3_"), ("blur", "blur")]);
+    assert!(shaders[0].entry_points[0].renamed());
+    assert!(!shaders[0].entry_points[1].renamed());
+
+    // The names are computed by running Naga's namer the way its WGSL backend
+    // does, rather than read out of the output -- so the output is what checks
+    // them. This is what fails if that reset ever stops matching the backend's.
+    let wgsl = std::fs::read_to_string(dir.join("out/blur.wgsl")).expect("read wgsl");
+    for entry in &shaders[0].entry_points {
+        assert!(
+            wgsl.contains(&format!("fn {}(", entry.emitted_name)),
+            "no `fn {}(` in:\n{wgsl}",
+            entry.emitted_name
+        );
+    }
+}
+
+#[test]
+fn the_generated_module_lists_every_shader() {
+    let dir = scratch("all");
+    write(&dir, "triangle.rs", TRIANGLE);
+    write(&dir, "solid.rs", SOLID);
+
+    Shaders::new()
+        .dir(dir.join("shaders"))
+        .emit_to(&dir.join("out"))
+        .expect("emit");
+
+    let generated = std::fs::read_to_string(dir.join("out/shaders.rs")).expect("read generated");
+    assert!(
+        generated.contains(
+            r#"pub const ALL: [(&str, &str); 2] = [("solid", SOLID), ("triangle", TRIANGLE), ];"#
+        ),
+        "{generated}"
+    );
+}
