@@ -131,6 +131,26 @@ pub struct Shader {
     pub output_path: PathBuf,
     /// The constant it is reachable through, e.g. `BUNNYMARK`.
     pub constant: String,
+    /// The module's name, which is its file stem, e.g. `bunnymark`.
+    pub name: String,
+    /// What each entry point is called, in the source and in the output.
+    pub entry_points: Vec<EntryPoint>,
+}
+
+/// An entry point, and the name a pipeline has to ask for to get it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryPoint {
+    /// What the shader calls it.
+    pub name: String,
+    /// What the generated WGSL calls it, which is usually the same.
+    pub emitted_name: String,
+}
+
+impl EntryPoint {
+    /// Whether Naga had to give it a different name on the way out.
+    pub fn renamed(&self) -> bool {
+        self.name != self.emitted_name
+    }
 }
 
 /// Compiles a directory of shader modules during a build script.
@@ -222,7 +242,24 @@ impl Shaders {
     /// where a compile error would be rather than buried in build output.
     pub fn run(self) -> Vec<Shader> {
         match self.emit() {
-            Ok(shaders) => shaders,
+            Ok(shaders) => {
+                // Silently answering to a different name than the source says
+                // is exactly the surprise this build step exists to avoid.
+                for shader in &shaders {
+                    for entry in shader.entry_points.iter().filter(|e| e.renamed()) {
+                        println!(
+                            "cargo::warning={}: entry point `{}` is `{}` in the generated \
+                             WGSL, because Naga reserves names it may need to uniquify. \
+                             Create the pipeline with `{}`, or rename it.",
+                            shader.source_path.display(),
+                            entry.name,
+                            entry.emitted_name,
+                            entry.emitted_name,
+                        );
+                    }
+                }
+                shaders
+            }
             Err(err) => {
                 // One line per `cargo::error=`; the directive has no escape for
                 // a newline.
@@ -278,7 +315,7 @@ impl Shaders {
         for source_path in self.sources()? {
             println!("cargo::rerun-if-changed={}", source_path.display());
             let source = std::fs::read_to_string(&source_path).map_err(at(&source_path))?;
-            let wgsl = self.compile(&source_path, &prelude, &source)?;
+            let (wgsl, entry_points) = self.compile(&source_path, &prelude, &source)?;
 
             let stem = source_path
                 .file_stem()
@@ -299,8 +336,23 @@ impl Shaders {
                 source_path,
                 output_path,
                 constant,
+                name: stem,
+                entry_points,
             });
         }
+
+        // A host that hands every shader to the same place should not have to
+        // repeat the list; it is exactly what the directory already said.
+        let _ = writeln!(
+            generated,
+            "\n/// Every shader here, as `(module name, WGSL)`.\n\
+             pub const ALL: [(&str, &str); {}] = [{}];",
+            shaders.len(),
+            shaders
+                .iter()
+                .map(|s| format!("({:?}, {}), ", s.name, s.constant))
+                .collect::<String>(),
+        );
 
         let module_path = out_dir.join(&self.module_name);
         std::fs::write(&module_path, generated).map_err(at(&module_path))?;
@@ -330,12 +382,13 @@ impl Shaders {
         Ok(sources)
     }
 
+    /// The WGSL, and what each entry point is called in it.
     fn compile(
         &self,
         path: &Path,
         prelude: &[(PathBuf, String)],
         source: &str,
-    ) -> Result<String, BuildError> {
+    ) -> Result<(String, Vec<EntryPoint>), BuildError> {
         let at = |kind| BuildError {
             path: Some(path.to_path_buf()),
             kind,
@@ -378,8 +431,45 @@ impl Shaders {
             info
         };
 
-        crate::to_wgsl(&module, &info).map_err(|err| at(BuildErrorKind::Emit(err.to_string())))
+        let wgsl = crate::to_wgsl(&module, &info)
+            .map_err(|err| at(BuildErrorKind::Emit(err.to_string())))?;
+        Ok((wgsl, entry_points(&module)))
     }
+}
+
+/// What each entry point is called on both sides of the WGSL backend.
+///
+/// Naga reserves identifiers it might need to uniquify -- a name ending in a
+/// digit would be ambiguous once it appends `_1` -- so `atrous3x3` comes out as
+/// `atrous3x3_`. The shader is correct either way, but a host creates a pipeline
+/// by entry point name, so the difference has to reach the caller.
+///
+/// The MSL, HLSL and GLSL backends hand back `entry_point_names` for exactly
+/// this. The WGSL one returns only a string: its `names` map is private and
+/// `finish` drops it. But the namer that fills that map is public, and the
+/// backend's own `reset` is these six arguments, so this asks the same question
+/// of the same code rather than reading the output text back.
+fn entry_points(module: &naga::Module) -> Vec<EntryPoint> {
+    let mut names = naga::FastHashMap::default();
+    naga::proc::Namer::default().reset(
+        module,
+        &naga::keywords::wgsl::RESERVED_SET,
+        &naga::keywords::wgsl::BUILTIN_IDENTIFIER_SET,
+        // An identifier must not start with two underscores.
+        naga::proc::CaseInsensitiveKeywordSet::empty(),
+        &["__", "_naga"],
+        &mut names,
+    );
+
+    module
+        .entry_points
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| EntryPoint {
+            name: entry.name.clone(),
+            emitted_name: names[&naga::proc::NameKey::EntryPoint(index as u16)].clone(),
+        })
+        .collect()
 }
 
 /// `bunnymark` -> `BUNNYMARK`, `post_proc` -> `POST_PROC`.

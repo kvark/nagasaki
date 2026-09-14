@@ -8,7 +8,7 @@ mod wgsl {
 }
 
 fn main() {
-    for (name, source) in [("sprite", wgsl::SPRITE), ("tonemap", wgsl::TONEMAP)] {
+    for (name, source) in wgsl::ALL {
         println!("--- {name} ({} bytes) ---", source.len());
         println!("{source}");
     }

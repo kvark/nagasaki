@@ -194,13 +194,31 @@ mod shaders {
 let wgsl: &str = shaders::SPRITE;
 ```
 
-One `pub const` per module, named after the file. Cargo re-runs the build when
-any shader changes, and a shader that does not compile fails the build the way a
-Rust error would:
+One `pub const` per module, named after the file, plus an `ALL` table of
+`(name, wgsl)` for a host that hands every shader to the same place. Cargo
+re-runs the build when any shader changes, and a shader that does not compile
+fails the build the way a Rust error would:
 
 ```text
 error: sprites@0.1.0: src/shaders/tonemap.rs:20:1: `fn tonemap`: operator `-` does not apply to these operand types
 ```
+
+Naga reserves identifiers it might need to uniquify, so an entry point whose
+name ends in a digit comes out with a `_` on it. A host creating a pipeline asks
+for an entry point *by name*, so the build script says so rather than leaving it
+to be discovered at pipeline creation:
+
+```text
+warning: src/shaders/a_trous.rs: entry point `atrous3x3` is `atrous3x3_` in the
+generated WGSL, because Naga reserves names it may need to uniquify. Create the
+pipeline with `atrous3x3_`, or rename it.
+```
+
+Each [`Shader`](src/build.rs) carries the whole mapping in `entry_points`,
+renamed or not. Naga's MSL, HLSL and GLSL backends hand `entry_point_names`
+back for exactly this; the WGSL one returns only a string, so the names come
+from running Naga's own `Namer` the way that backend does — the same answer
+from the same code, not a reading of the output text.
 
 `examples/sprites` is this, working.
 
