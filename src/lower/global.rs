@@ -53,8 +53,10 @@ pub(super) fn bind_globals(ctx: &Context, function: &mut Function, env: &mut Env
 
 pub(super) fn lower_static(ctx: &mut Context, item: ItemStatic) -> Result<(), Error> {
     let name = item.ident.to_string();
+    ctx.pending_space = None;
     let ty = ctx.lower_type(&item.ty)?;
-    insert_global(ctx, name, ty, &item.attrs)
+    let from_type = ctx.pending_space.take();
+    insert_global(ctx, name, ty, &item.attrs, from_type)
 }
 
 pub(super) fn lower_foreign_mod(ctx: &mut Context, item: ItemForeignMod) -> Result<(), Error> {
@@ -62,8 +64,10 @@ pub(super) fn lower_foreign_mod(ctx: &mut Context, item: ItemForeignMod) -> Resu
         match foreign {
             ForeignItem::Static(st) => {
                 let name = st.ident.to_string();
+                ctx.pending_space = None;
                 let ty = ctx.lower_type(&st.ty)?;
-                insert_global(ctx, name, ty, &st.attrs)?;
+                let from_type = ctx.pending_space.take();
+                insert_global(ctx, name, ty, &st.attrs, from_type)?;
             }
             other => {
                 return Err(Error::UnsupportedItem(foreign_kind(&other)));
@@ -78,6 +82,7 @@ fn insert_global(
     name: String,
     ty: Handle<Type>,
     attrs: &[Attribute],
+    from_type: Option<AddressSpace>,
 ) -> Result<(), Error> {
     let info = parse_resource_attrs(attrs)?;
     // Both or neither: a host that assigns bindings itself (Blade matches
@@ -100,6 +105,24 @@ fn insert_global(
             return Err(Error::UnexpectedAddressSpace(name));
         }
         return finish_global(ctx, name, ty, AddressSpace::Handle, false, binding);
+    }
+
+    // `Uniform<T>` and its siblings say the space in the type. An attribute
+    // says the same thing the older way; saying both is a contradiction
+    // waiting to happen.
+    if let Some(space) = from_type {
+        if info.space.is_some() {
+            return Err(Error::DuplicateAttribute("address space".into()));
+        }
+        let writable = match space {
+            AddressSpace::Storage { access } => access.contains(StorageAccess::STORE),
+            AddressSpace::WorkGroup | AddressSpace::Private => true,
+            _ => false,
+        };
+        if !matches!(space, AddressSpace::Storage { .. }) && has_runtime_array(ctx, ty) {
+            return Err(Error::RuntimeArrayNotStorage(name));
+        }
+        return finish_global(ctx, name, ty, space, writable, binding);
     }
 
     let (space, writable) = match info.space.unwrap_or(SpaceKind::Uniform) {

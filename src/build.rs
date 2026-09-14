@@ -321,6 +321,8 @@ impl Shaders {
             .into_iter()
             .map(|entry| entry.path())
             .filter(|path| path.extension().is_some_and(|e| e == "rs"))
+            // `mod.rs` lists the shader modules for Rust; it is not one.
+            .filter(|path| path.file_name().is_some_and(|n| n != "mod.rs"))
             .filter(|path| !prelude.contains(path))
             .collect();
         // Directory order is arbitrary; the generated file should not be.

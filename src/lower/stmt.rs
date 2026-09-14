@@ -369,6 +369,14 @@ fn lower_local(
     local: &Local,
     env: &mut Env,
 ) -> Result<(), Error> {
+    // `let _ = e;` evaluates for effect and binds nothing, as in Rust.
+    if matches!(strip_pat(&local.pat), Pat::Wild(_)) {
+        if let Some(init) = &local.init {
+            let _ = lower_expr(ctx, function, body, &init.expr, env)?;
+        }
+        return Ok(());
+    }
+
     let (name, annot) = bind_ident_pat(&local.pat)?;
     let annot = annot.map(|ty| ctx.lower_type(ty)).transpose()?;
 
@@ -412,6 +420,14 @@ fn lower_local(
     }
     env.push(name, Slot::Ptr(pointer), ty);
     Ok(())
+}
+
+fn strip_pat(pat: &Pat) -> &Pat {
+    match pat {
+        Pat::Type(inner) => strip_pat(&inner.pat),
+        Pat::Paren(inner) => strip_pat(&inner.pat),
+        other => other,
+    }
 }
 
 fn bind_ident_pat(pat: &Pat) -> Result<(String, Option<&SynType>), Error> {

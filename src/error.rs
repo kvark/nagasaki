@@ -18,6 +18,8 @@ pub enum Error {
     UnsupportedItem(String),
     #[error("unsupported type: {0}")]
     UnsupportedType(String),
+    #[error("unsupported method `{0}`")]
+    UnsupportedMethod(String),
     #[error("unsupported expression: {0}")]
     UnsupportedExpr(String),
     #[error("unsupported binary operator: {0}")]

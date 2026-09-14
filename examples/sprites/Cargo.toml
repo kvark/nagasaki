@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+synaga-shader = { path = "../../crates/shader" }
 
 [build-dependencies]
 synaga = { path = "../.." }

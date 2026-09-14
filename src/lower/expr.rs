@@ -40,6 +40,12 @@ pub(super) fn lower_expr_hinted(
         Expr::Paren(inner) => lower_expr_hinted(ctx, function, body, &inner.expr, env, hint),
         Expr::Group(inner) => lower_expr_hinted(ctx, function, body, &inner.expr, env, hint),
         Expr::Path(path) => {
+            // `vec4::ZERO` names a value on a type rather than a binding.
+            if path.path.segments.len() == 2 {
+                let ty = path.path.segments[0].ident.to_string();
+                let item = path.path.segments[1].ident.to_string();
+                return super::method::lower_qualified_const(ctx, function, &ty, &item);
+            }
             let ident = path
                 .path
                 .get_ident()
@@ -89,6 +95,7 @@ pub(super) fn lower_expr_hinted(
         Expr::Struct(lit) => super::structure::lower_struct_lit(ctx, function, body, lit, env),
         Expr::Array(array) => lower_array_lit(ctx, function, body, array, env),
         Expr::Reference(reference) => lower_reference(ctx, function, body, reference, env),
+        Expr::MethodCall(call) => super::method::lower_method_call(ctx, function, body, call, env),
         _ => Err(Error::UnsupportedExpr(expr_kind(expr))),
     }
 }
@@ -272,8 +279,27 @@ fn lower_reference(
     reference: &syn::ExprReference,
     env: &mut Env,
 ) -> Result<Typed, Error> {
+    // A texture or sampler is a handle, so `&tex` is just `tex`: Naga wants the
+    // global itself, and there is no memory to take the address of.
+    if let Some(place) = lower_place(ctx, function, body, &reference.expr, env)? {
+        if !super::texture::is_handle(ctx, place.ty) {
+            return finish_reference(ctx, reference, place);
+        }
+    }
+    let (handle, ty) = lower_expr(ctx, function, body, &reference.expr, env)?;
+    if super::texture::is_handle(ctx, ty) {
+        return Ok((handle, ty));
+    }
     let place = lower_place(ctx, function, body, &reference.expr, env)?
         .ok_or(Error::InvalidAssignTarget)?;
+    finish_reference(ctx, reference, place)
+}
+
+fn finish_reference(
+    ctx: &mut Context,
+    reference: &syn::ExprReference,
+    place: super::place::Place,
+) -> Result<Typed, Error> {
     if reference.mutability.is_some() && !place.writable {
         return Err(Error::AssignToReadonly(place.root));
     }

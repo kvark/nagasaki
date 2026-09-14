@@ -1,5 +1,5 @@
 [workspace]
-members = ["examples/sprites"]
+members = ["crates/macros", "crates/shader", "examples/sprites"]
 
 [package]
 name = "synaga"

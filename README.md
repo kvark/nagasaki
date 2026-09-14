@@ -46,7 +46,7 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
   `rayQueryInitialize` / `Proceed` / `GetCommittedIntersection` / …, and the
   predeclared `RAY_FLAG_*` and `RAY_QUERY_INTERSECTION_*` names
 - `binding_array<T>` and `binding_array<T, N>`
-- zero values: `T()` for a struct, vector, matrix or scalar
+- zero values: `T()`, or `T::default()`, for a struct, vector, matrix or scalar
 - structs: `struct S { a: vec3, b: f32 }`, literals `S { a, b: x }`, field access `s.a`
 - arrays: `[T; N]` and literals `[a, b, c]`; `[T]` for a runtime-sized storage buffer
 - textures and samplers: `texture_2d<f32>`, `texture_storage_2d<Rgba8Unorm, Write>`,
@@ -151,20 +151,18 @@ for the host to fill in — which is how Blade supplies vertex attributes.
 The dialect was built against [Blade][blade]'s shaders, which is why it covers
 what it covers. Bunnymark, egui, skin, debug-blit, the a-trous denoiser, the
 colour and quaternion helpers, the random-number generator, and the particle and
-post-process compute passes have all been ported and checked, five of them
-against the WGSL they came from: Naga parses the original, synaga parses the
-port, and the two modules must describe the same globals, functions, entry
-points, struct layouts and bindings.
+post-process compute passes have all been ported and checked — as modules `rustc`
+compiles, transpiled by a build script, with three of them compared interface for
+interface against the WGSL they came from, parsed by Naga.
 
 Those ports are in the git history rather than the tree; there is no reason to
 carry someone else's shaders here until there is something to do with them.
-`tests/blade_basics.rs` keeps the constructs they needed.
+`tests/blade_basics.rs` keeps the constructs they needed. Of Blade's 37 shaders,
+36 use only what the dialect covers; the exception is its cooperative-matrix
+matmul example.
 
 Rust keywords are the one thing that forces a rename: Blade's `fn fs_main(in: VertexOutput)`
 has to call its argument something else.
-
-Of Blade's 37 shaders, 36 use only constructs the dialect covers; the exception is
-its cooperative-matrix matmul example.
 
 ## Using it
 
@@ -197,8 +195,8 @@ let wgsl: &str = shaders::SPRITE;
 ```
 
 One `pub const` per module, named after the file. Cargo re-runs the build when
-any shader changes, and a shader that does not compile fails the build the way
-a Rust error would:
+any shader changes, and a shader that does not compile fails the build the way a
+Rust error would:
 
 ```text
 error: sprites@0.1.0: src/shaders/tonemap.rs:20:1: `fn tonemap`: operator `-` does not apply to these operand types
@@ -206,25 +204,77 @@ error: sprites@0.1.0: src/shaders/tonemap.rs:20:1: `fn tonemap`: operator `-` do
 
 `examples/sprites` is this, working.
 
-### The shader files are not part of your crate
+### The shader files are real Rust
 
-A shader module mentions `vec3`, `texture_2d<f32>`, `#[vertex]` — none of which
-are Rust. So the files must not be reachable from your crate root: there is no
-`mod shaders;` pointing at `src/shaders/`, and Cargo never looks at a file
-nothing declares. The `.rs` extension still buys syntax highlighting and brace
-matching.
+Add [`synaga-shader`](crates/shader) as a dependency and a shader module is
+an ordinary Rust module: `mod shaders;` like any other, `rustc` type-checks it,
+`cargo fmt` formats it, and rust-analyzer understands it. The build script
+reads the same files as text and transpiles them, so each one is compiled
+twice — once to be checked, once to become WGSL.
 
-The cost is real: `rustc` never sees these files, so they get no borrow
-checking and no inference beyond what this crate does, and `cargo fmt` skips
-them for the same reason. rust-analyzer will also mark them "not included in
-the module tree"; `rust-analyzer.files.excludeDirs` takes that off. If you
-would rather they not look like crate sources at all, point `Shaders::dir` at
-`shaders/` beside `src/`.
+```rust,ignore
+use synaga_shader::*;
+
+pub static camera: Uniform<Camera> = binding();
+
+#[io]
+pub struct VsOut {
+    #[builtin(position)] pub clip: vec4,
+    #[location(0)] pub uv: vec2,
+}
+
+#[vertex]
+pub fn vs(#[location(0)] pos: vec3, #[location(1)] uv: vec2) -> VsOut {
+    VsOut { clip: camera.view_proj * pos.extend(1.0), uv }
+}
+```
+
+Nothing in `synaga-shader` computes anything — every body panics. The types
+are there to be *checked*; the shader runs on a GPU. Real implementations can
+be filled in later without a signature changing.
+
+#### Three things Rust spells differently
+
+Rust cannot do what WGSL does here, so a checkable shader says it another way.
+Both spellings transpile identically; only one of them type-checks.
+
+| WGSL | Checkable Rust | Why |
+| --- | --- | --- |
+| `v.xyz`, `v.rgb` | `v.xyz()`, `v.rgb()` | one piece of memory cannot carry a hundred overlapping names (`v.x` is still a field) |
+| `vec3(x)`, `vec4(v, w)` | `vec3::splat(x)`, `v.extend(w)` | a function cannot be overloaded on arity |
+| `a <= b` on vectors | `a.cmple(b)` | Rust's `<=` yields one `bool`, a shader's yields one per lane |
+| `v as vec3<f32>` | `vec3::from(v)` | `as` only converts primitives |
+| `T()` | `T::default()` | `T()` is a call, and a struct is not a function |
+| `textureLoad(t, c)` on storage | `textureLoadStorage(t, c)` | same name, one argument fewer |
+
+`usize` is `u32`. A GPU index is 32-bit and WGSL has no `usize`, but `[T; N]`,
+`[T]` and the prelude's vectors index by it and `Index` offers nothing else, so
+`arr[i as usize]` has to mean what it says.
+
+The address space moves into the type, so a global needs no attribute:
+`Uniform<T>`, `Storage<T>`, `StorageMut<T>`, `Workgroup<T>`, `Private<T>`, each
+initialised `= binding()`.
+
+Writable resources are `static mut`: assigning through a shared `static` is not
+something Rust allows however the type is arranged. The stage attributes wrap
+function bodies in `unsafe` so the shader source does not have to say it.
+
+One line of boilerplate per shader tree, in `src/shaders/mod.rs`, turns off the
+lints that would otherwise fire on every lowercase type and global, and on the
+parameters WGSL is happy to leave unread:
+
+```rust,ignore
+#![allow(
+    non_camel_case_types, non_snake_case, non_upper_case_globals,
+    dead_code, unused_imports, unused_variables
+)]
+```
 
 ### A prelude in place of `#include`
 
 Files named with `prelude` are declarations every module can use, and are not
-compiled as shaders themselves. What a module does not reach is pruned from its
+compiled as shaders themselves. It may be called more than once, for a shader set
+with several includes. What a module does not reach is pruned from its
 output, so one prelude can hold everything the set needs between them without
 every shader carrying all of it — which matters for a host that binds resources
 by name and would otherwise have to find something to bind an unused uniform to.
