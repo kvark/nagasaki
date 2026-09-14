@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
-use nagasaki::{parse_str, to_wgsl, validate, validate_unbound};
+use synaga::{parse_str, to_wgsl, validate, validate_unbound};
 
 /// Lower, validate, and emit WGSL. Panics with the reason on any failure.
 pub fn roundtrip(src: &str) -> String {

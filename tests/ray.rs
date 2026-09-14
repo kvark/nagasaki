@@ -8,7 +8,7 @@
 mod common;
 
 use common::*;
-use nagasaki::{naga, parse_str, to_wgsl, validate_with};
+use synaga::{naga, parse_str, to_wgsl, validate_with};
 
 /// Validate the way a host with ray tracing would: bindings assigned elsewhere,
 /// `RAY_QUERY` turned on.

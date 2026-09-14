@@ -2,13 +2,13 @@
 members = ["examples/sprites"]
 
 [package]
-name = "nagasaki"
+name = "synaga"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"
 description = "Native Rust to Naga transpiler"
 license = "MIT"
-repository = "https://github.com/kvark/nagasaki"
+repository = "https://github.com/kvark/synaga"
 readme = "README.md"
 
 [dev-dependencies]

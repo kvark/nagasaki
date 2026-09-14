@@ -7,4 +7,4 @@ publish = false
 [dependencies]
 
 [build-dependencies]
-nagasaki = { path = "../.." }
+synaga = { path = "../.." }
