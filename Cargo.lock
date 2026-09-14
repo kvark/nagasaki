@@ -155,16 +155,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nagasaki"
-version = "0.1.0"
-dependencies = [
- "naga",
- "proc-macro2",
- "syn 2.0.119",
- "thiserror",
-]
-
-[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -208,7 +198,7 @@ checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 name = "sprites"
 version = "0.1.0"
 dependencies = [
- "nagasaki",
+ "synaga",
 ]
 
 [[package]]
@@ -231,6 +221,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "synaga"
+version = "0.1.0"
+dependencies = [
+ "naga",
+ "proc-macro2",
+ "syn 2.0.119",
+ "thiserror",
 ]
 
 [[package]]

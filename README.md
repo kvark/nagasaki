@@ -1,4 +1,4 @@
-# nagasaki
+# synaga
 
 Native Rust to [Naga](https://docs.rs/naga) IR transpiler.
 
@@ -113,8 +113,8 @@ asserts the module has none. Drop both attributes for that, and validate with
 `validate_unbound`, which is `validate` minus `ValidationFlags::BINDINGS`:
 
 ```rust
-let module = nagasaki::parse_str(src)?;
-let info = nagasaki::validate_unbound(&module)?;
+let module = synaga::parse_str(src)?;
+let info = synaga::validate_unbound(&module)?;
 ```
 
 Blade takes a `naga::Module` directly (`ShaderDesc::naga_module`), so a module
@@ -152,7 +152,7 @@ for the host to fill in — which is how Blade supplies vertex attributes.
 skin, debug-blit, the a-trous denoiser, colour and quaternion helpers, the
 random-number generator, and particle and post-process compute passes. Five of
 them are checked against the WGSL they came from: Naga parses the original,
-nagasaki parses the port, and the two modules must describe the same globals,
+synaga parses the port, and the two modules must describe the same globals,
 functions, entry points, struct layouts and bindings.
 
 Rust keywords are the one thing that forces a rename: Blade's `fn fs_main(in: VertexOutput)`
@@ -178,7 +178,7 @@ build.rs
 ```rust,ignore
 // build.rs
 fn main() {
-    nagasaki::build::Shaders::new().prelude("common.rs").run();
+    synaga::build::Shaders::new().prelude("common.rs").run();
 }
 ```
 
@@ -227,7 +227,7 @@ by name and would otherwise have to find something to bind an unused uniform to.
 ### Or call it directly
 
 ```rust
-use nagasaki::{parse_str, to_wgsl, validate};
+use synaga::{parse_str, to_wgsl, validate};
 
 let module = parse_str("fn add(a: f32, b: f32) -> f32 { a + b }")?;
 let info = validate(&module)?;

@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nagasaki::build::{Bindings, BuildErrorKind, Shaders};
+use synaga::build::{Bindings, BuildErrorKind, Shaders};
 
 /// A scratch directory unique to one test. `CARGO_TARGET_TMPDIR` is cleaned by
 /// `cargo clean` and needs no dependency.
@@ -254,7 +254,7 @@ fn ray_queries_cannot_be_written_as_wgsl() {
     let err = Shaders::new()
         .dir(dir.join("shaders"))
         .bindings(Bindings::Host)
-        .capabilities(nagasaki::naga::valid::Capabilities::RAY_QUERY)
+        .capabilities(synaga::naga::valid::Capabilities::RAY_QUERY)
         .emit_to(&dir.join("out"))
         .expect_err("WGSL cannot express a ray query");
     assert!(matches!(err.kind, BuildErrorKind::Emit(_)), "{err}");

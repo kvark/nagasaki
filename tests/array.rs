@@ -117,8 +117,8 @@ fn validation_errors_say_why() {
         #[group(0)] #[binding(0)] static frame: Frame = ();
         fn f() -> f32 { frame.weights[2] }
     "#;
-    let module = nagasaki::parse_str(src).expect("parse");
-    let err = nagasaki::validate(&module).expect_err("uniform layout");
+    let module = synaga::parse_str(src).expect("parse");
+    let err = synaga::validate(&module).expect_err("uniform layout");
     let msg = err.to_string();
     assert!(msg.contains("stride"), "{msg}");
     assert!(msg.contains("alignment"), "{msg}");

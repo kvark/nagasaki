@@ -1,4 +1,4 @@
-//! Real Blade shaders, rewritten in the nagasaki dialect.
+//! Real Blade shaders, rewritten in the synaga dialect.
 //!
 //! Each of these is a port of a file in <https://github.com/kvark/blade>, kept
 //! line-for-line with the WGSL where the dialect allows it. They are the
@@ -17,7 +17,7 @@ use common::*;
 /// the two modules must describe the same interface.
 fn assert_ports(original: &str, port: &str) {
     let original = naga::front::wgsl::parse_str(original).expect("naga parses the original WGSL");
-    let ported = nagasaki::parse_str(port).expect("nagasaki parses the port");
+    let ported = synaga::parse_str(port).expect("synaga parses the port");
     assert_eq!(interface(&original), interface(&ported));
 }
 

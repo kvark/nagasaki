@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use nagasaki::parse_str;
+use synaga::parse_str;
 
 #[test]
 fn add_lowers_and_validates() {

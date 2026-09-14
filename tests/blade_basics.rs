@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use nagasaki::{parse_str, validate, validate_unbound};
+use synaga::{parse_str, validate, validate_unbound};
 
 #[test]
 fn globals_can_leave_bindings_to_the_host() {
