@@ -17,10 +17,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test
-      # The workspace member wires a build script up for real: its shaders are
-      # transpiled by Cargo before it compiles, so this failing means the
-      # documented workflow is broken however green the unit tests are.
+      - run: cargo test --workspace
+      # The example crate wires a build script up for real: its shader modules
+      # are type-checked by rustc and transpiled by the build script, so this
+      # failing means the documented workflow is broken however green the unit
+      # tests are.
       - run: cargo run -p sprites
 
   # Lints are held to a pinned toolchain, so a new lint in a future Rust
@@ -35,7 +36,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   msrv:
     runs-on: ubuntu-latest
@@ -43,4 +44,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.87.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets
+      - run: cargo check --workspace --all-targets

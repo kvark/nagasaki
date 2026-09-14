@@ -158,13 +158,29 @@ pub(super) fn lower_field(
     if ctx.as_struct(base_ty).is_some() {
         return super::structure::lower_struct_field(ctx, function, body, base, base_ty, &member);
     }
-    let (vec_size, scalar) = ctx
-        .as_vector(base_ty)
-        .ok_or_else(|| Error::UnsupportedExpr("field".into()))?;
     let letters =
         swizzle_components(&member).ok_or_else(|| Error::UnsupportedSwizzle(member.clone()))?;
+    swizzle(ctx, function, body, base, base_ty, &letters, &member)
+}
+
+/// Build a swizzle: one component is an access, more than one is a `Swizzle`.
+///
+/// Shared with the method spelling, since `v.xyz` and `v.xyz()` mean the same
+/// thing and should lower the same way.
+pub(super) fn swizzle(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    base: Handle<Expression>,
+    base_ty: Handle<Type>,
+    letters: &[u32],
+    member: &str,
+) -> Result<Typed, Error> {
+    let (vec_size, scalar) = ctx
+        .as_vector(base_ty)
+        .ok_or_else(|| Error::UnsupportedExpr("swizzle of a non-vector".into()))?;
     if letters.is_empty() || letters.len() > 4 || letters.iter().any(|&i| i >= vec_size as u32) {
-        return Err(Error::UnsupportedSwizzle(member));
+        return Err(Error::UnsupportedSwizzle(member.into()));
     }
     let mut pattern = [SwizzleComponent::X; 4];
     for (slot, &index) in pattern.iter_mut().zip(letters.iter()) {
@@ -181,7 +197,7 @@ pub(super) fn lower_field(
             body,
             Expression::AccessIndex {
                 base,
-                index: pattern[0] as u32,
+                index: letters[0],
             },
         )?;
         return Ok((handle, ctx.intern_scalar(scalar)));
@@ -189,8 +205,7 @@ pub(super) fn lower_field(
     let out_size = match letters.len() {
         2 => VectorSize::Bi,
         3 => VectorSize::Tri,
-        4 => VectorSize::Quad,
-        _ => return Err(Error::UnsupportedSwizzle(member)),
+        _ => VectorSize::Quad,
     };
     let handle = emit(
         function,

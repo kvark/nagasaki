@@ -224,6 +224,9 @@ pub(super) fn texture_builtin(name: &str) -> Option<TextureOp> {
             TextureOp::SampleCompareLevel
         }
         "textureLoad" | "texture_load" => TextureOp::Load,
+        // The storage form is the same operation; Rust just cannot give one
+        // name two arities, so a checkable shader spells it apart.
+        "textureLoadStorage" | "texture_load_storage" => TextureOp::Load,
         "textureStore" | "texture_store" => TextureOp::Store,
         "textureDimensions" | "texture_dimensions" => TextureOp::Dimensions,
         "textureNumLevels" | "texture_num_levels" => TextureOp::NumLevels,

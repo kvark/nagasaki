@@ -38,7 +38,7 @@ fn pointer_arg(
 }
 
 /// The type `T()` names, for a zero value: a vector, matrix, scalar, or struct.
-fn zero_value_type(ctx: &mut Context, name: &str) -> Option<Handle<naga::Type>> {
+pub(super) fn zero_value_type(ctx: &mut Context, name: &str) -> Option<Handle<naga::Type>> {
     if let Some((size, shorthand)) = parse_vec_ident(name) {
         return Some(ctx.intern_vector(size, shorthand.unwrap_or(naga::Scalar::F32)));
     }
@@ -47,8 +47,8 @@ fn zero_value_type(ctx: &mut Context, name: &str) -> Option<Handle<naga::Type>> 
     }
     let scalar = match name {
         "f32" => naga::Scalar::F32,
-        "u32" => naga::Scalar::U32,
-        "i32" => naga::Scalar::I32,
+        "u32" | "usize" => naga::Scalar::U32,
+        "i32" | "isize" => naga::Scalar::I32,
         "bool" => naga::Scalar::BOOL,
         _ => return ctx.struct_by_name(name),
     };
@@ -262,6 +262,15 @@ pub(super) fn lower_call(
     let name = match call.func.as_ref() {
         Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
             path.path.segments[0].ident.to_string()
+        }
+        // `vec3::splat(x)` and `vec4::from(v)` name the type they build.
+        Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 2 => {
+            let ty = path.path.segments[0].ident.to_string();
+            let method = path.path.segments[1].ident.to_string();
+            let args: Vec<&Expr> = call.args.iter().collect();
+            return super::method::lower_qualified_call(
+                ctx, function, body, &ty, &method, &args, env,
+            );
         }
         _ => return Err(Error::UnsupportedExpr("call".into())),
     };

@@ -16,6 +16,7 @@ mod env;
 mod expr;
 mod global;
 mod matrix;
+mod method;
 mod place;
 mod ray;
 mod stmt;
@@ -76,6 +77,10 @@ pub struct Context {
     pub(super) globals: Vec<global::GlobalInfo>,
     pub(super) structs: Vec<(String, Handle<Type>)>,
     pub(super) consts: Vec<constant::ConstInfo>,
+    /// Set by `lower_type` when it unwraps an address-space wrapper, and taken
+    /// by the global being declared. A type mentions its space at most once,
+    /// and only a global asks.
+    pub(super) pending_space: Option<AddressSpace>,
 }
 
 impl Context {
@@ -85,6 +90,7 @@ impl Context {
             globals: Vec::new(),
             structs: Vec::new(),
             consts: Vec::new(),
+            pending_space: None,
         }
     }
 
@@ -102,6 +108,11 @@ impl Context {
 
     fn lower_item(&mut self, item: Item) -> Result<(), Error> {
         match item {
+            // A shader module is also an ordinary Rust module, so it carries
+            // the `use` that brings the shader prelude into scope and the
+            // `mod` that lists its siblings. Neither says anything about the
+            // shader.
+            Item::Use(_) | Item::Mod(_) => Ok(()),
             Item::Fn(func) => self.lower_fn(func),
             Item::Static(st) => global::lower_static(self, st),
             Item::ForeignMod(fm) => global::lower_foreign_mod(self, fm),
@@ -233,10 +244,11 @@ impl Context {
             }
             _ => return Err(Error::UnsupportedType("non-path type".into())),
         };
-        if path.path.segments.len() != 1 {
-            return Err(Error::UnsupportedType("path type".into()));
-        }
-        let seg = &path.path.segments[0];
+        let seg = path
+            .path
+            .segments
+            .last()
+            .ok_or_else(|| Error::UnsupportedType("empty path".into()))?;
         let name = seg.ident.to_string();
 
         // Textures and samplers take their own argument shapes —
@@ -278,6 +290,17 @@ impl Context {
             _ => return Err(Error::UnsupportedType(name)),
         };
 
+        // The address space is part of the type: `Uniform<T>` and friends wrap
+        // what they hold, so a global is checkable Rust without an attribute.
+        if let Some(space) = space_wrapper(&name) {
+            let [inner] = type_args_only(seg)[..] else {
+                return Err(Error::UnsupportedType(name));
+            };
+            let ty = self.lower_type(inner)?;
+            self.pending_space = Some(space);
+            return Ok(ty);
+        }
+
         // `binding_array<T>` is a bound array of resources: a texture array in
         // a descriptor set, not memory.
         if name == "atomic" {
@@ -311,10 +334,13 @@ impl Context {
         if type_arg.is_some() {
             return Err(Error::UnsupportedType(name));
         }
+        // `usize` has no shader meaning, but `[T; N]` and `[T]` index by it and
+        // nothing can change that, so a checkable shader has to be able to
+        // write `arr[i as usize]`. An index is 32-bit on a GPU, so it is `u32`.
         match name.as_str() {
             "f32" => Ok(self.intern_scalar(Scalar::F32)),
-            "u32" => Ok(self.intern_scalar(Scalar::U32)),
-            "i32" => Ok(self.intern_scalar(Scalar::I32)),
+            "u32" | "usize" => Ok(self.intern_scalar(Scalar::U32)),
+            "i32" | "isize" => Ok(self.intern_scalar(Scalar::I32)),
             "bool" => Ok(self.intern_scalar(Scalar::BOOL)),
             other => self
                 .struct_by_name(other)
@@ -562,6 +588,22 @@ pub(super) fn parse_mat_ident(name: &str) -> Option<(VectorSize, VectorSize, Opt
     }
 }
 
+/// The address space `Uniform<T>` and its siblings stand for.
+fn space_wrapper(name: &str) -> Option<AddressSpace> {
+    Some(match name {
+        "Uniform" => AddressSpace::Uniform,
+        "Storage" => AddressSpace::Storage {
+            access: naga::StorageAccess::LOAD,
+        },
+        "StorageMut" => AddressSpace::Storage {
+            access: naga::StorageAccess::LOAD.union(naga::StorageAccess::STORE),
+        },
+        "Workgroup" => AddressSpace::WorkGroup,
+        "Private" => AddressSpace::Private,
+        _ => return None,
+    })
+}
+
 /// The type arguments of `seg`, ignoring any const ones.
 fn type_args_only(seg: &syn::PathSegment) -> Vec<&syn::Type> {
     let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
@@ -621,8 +663,8 @@ fn lower_scalar_ident(ty: &syn::Type) -> Result<Scalar, Error> {
     };
     match ident.to_string().as_str() {
         "f32" => Ok(Scalar::F32),
-        "u32" => Ok(Scalar::U32),
-        "i32" => Ok(Scalar::I32),
+        "u32" | "usize" => Ok(Scalar::U32),
+        "i32" | "isize" => Ok(Scalar::I32),
         "bool" => Ok(Scalar::BOOL),
         other => Err(Error::UnsupportedType(other.into())),
     }

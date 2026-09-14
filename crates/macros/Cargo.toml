@@ -1,0 +1,16 @@
+[package]
+name = "synaga-macros"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+description = "Attribute macros that make the synaga shader dialect legal Rust"
+license = "MIT"
+repository = "https://github.com/kvark/synaga"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "parsing", "printing"] }
+quote = "1"
+proc-macro2 = "1"

@@ -1,0 +1,11 @@
+[package]
+name = "synaga-shader"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+description = "Rust types for shaders written in the synaga dialect"
+license = "MIT"
+repository = "https://github.com/kvark/synaga"
+
+[dependencies]
+synaga-macros = { path = "../macros", version = "0.1.0" }
